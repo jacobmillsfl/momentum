@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Momentum</string>
+    <string name="notification_daily_title">Momentum</string>
+    <string name="notification_daily_text">Time to check in on your habits.</string>
+</resources>

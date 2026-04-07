@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+**/build/
+build/
+
+# Local machine / SDK path (use local.properties.example)
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.kotlin/
+
+# Android outputs & intermediates
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+**/outputs/
+
+# Keystores (never commit signing keys)
+*.jks
+*.keystore
+
+# Google Services / Firebase (if added later)
+google-services.json
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches teal in Momentum artwork; fills adaptive icon mask behind foreground -->
+    <color name="ic_launcher_background">#1BA8B0</color>
+</resources>
