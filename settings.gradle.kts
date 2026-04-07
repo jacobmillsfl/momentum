@@ -14,5 +14,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Momentum"
 include(":app")
