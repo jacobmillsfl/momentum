@@ -1,5 +1,8 @@
 <resources>
     <string name="app_name">Momentum</string>
-    <string name="notification_daily_title">Momentum</string>
-    <string name="notification_daily_text">Time to check in on your habits.</string>
+    <string name="notification_morning_title">Momentum</string>
+    <string name="notification_morning_text">Start your day with a quick habit check-in.</string>
+    <string name="notification_evening_title">Momentum</string>
+    <string name="notification_evening_text">Take a moment to log how today went.</string>
+    <string name="notification_evening_streak_text">Don\'t lose your %1$d-day habit streak! Log today before the day ends.</string>
 </resources>

@@ -29,4 +29,10 @@ interface TaskDao {
 
     @Query("DELETE FROM tasks")
     suspend fun deleteAll()
+
+    @Query("UPDATE tasks SET sessionId = :newSessionId WHERE sessionId = :oldSessionId")
+    suspend fun reassignSessionId(oldSessionId: String, newSessionId: String)
+
+    @Query("DELETE FROM tasks WHERE sessionId = :sessionId")
+    suspend fun deleteForSession(sessionId: String)
 }

@@ -16,7 +16,7 @@ object MomentumNotificationChannels {
             "Daily reminders",
             NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
-            description = "Reminder to log habits and sessions"
+            description = "Morning and evening reminders to log habits"
         }
         nm.createNotificationChannel(channel)
     }

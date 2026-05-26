@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +78,14 @@ private fun formatNotificationTime12h(notificationTime: String): String {
 
 private val weightSliderRange = 80f..400f
 
+/** Snap Settings weight sliders to 5 lb steps (range unchanged). */
+private fun snapWeightSlider(raw: Float): Float {
+    val stepped = (raw / 5f).roundToInt() * 5f
+    return stepped.coerceIn(weightSliderRange.start, weightSliderRange.endInclusive)
+}
+
+private val weightSliderSteps = ((weightSliderRange.endInclusive - weightSliderRange.start) / 5f).roundToInt() - 1
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen() {
@@ -85,11 +94,12 @@ fun SettingsScreen() {
     val repo = LocalRepository.current
     val scope = rememberCoroutineScope()
     val applyTheme = LocalThemeController.current
-    var freezeSteps by remember { mutableIntStateOf(3) }
     var themeMode by remember { mutableStateOf("system") }
     var notificationsEnabled by remember { mutableStateOf(false) }
     var notificationTime by remember { mutableStateOf("09:00") }
+    var notificationEveningTime by remember { mutableStateOf("20:00") }
     var showTimePicker by remember { mutableStateOf(false) }
+    var timePickerTarget by remember { mutableStateOf("morning") }
     var targetSlider by remember { mutableFloatStateOf(175f) }
     var targetSet by remember { mutableStateOf(false) }
     var startingSlider by remember { mutableFloatStateOf(175f) }
@@ -97,6 +107,8 @@ fun SettingsScreen() {
     var backupFeedback by remember { mutableStateOf<String?>(null) }
     var pendingRestoreJson by remember { mutableStateOf<String?>(null) }
     var pendingRestorePreview by remember { mutableStateOf<MomentumBackupV1?>(null) }
+    var showResetConfirm by remember { mutableStateOf(false) }
+    var settingsLoadTick by remember { mutableIntStateOf(0) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
@@ -146,18 +158,18 @@ fun SettingsScreen() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        freezeSteps = (repo.getKv(KvKeys.FREEZES_ALLOWED)?.toIntOrNull() ?: 3)
-            .coerceIn(0, KvKeys.MAX_STREAK_FREEZES_PER_MONTH)
+    LaunchedEffect(settingsLoadTick) {
         themeMode = repo.getKv(KvKeys.THEME_MODE) ?: "system"
+        applyTheme(themeMode)
         notificationsEnabled = repo.getKv(KvKeys.NOTIFICATIONS_ENABLED) == "true"
         notificationTime = repo.getKv(KvKeys.NOTIFICATION_TIME) ?: "09:00"
+        notificationEveningTime = repo.getKv(KvKeys.NOTIFICATION_EVENING_TIME) ?: "20:00"
         val tw = repo.targetWeightLbs()
         targetSet = tw != null
-        targetSlider = (tw ?: 175.0).toFloat().coerceIn(weightSliderRange.start, weightSliderRange.endInclusive)
+        targetSlider = snapWeightSlider((tw ?: 175.0).toFloat())
         val sw = repo.startingWeightLbs()
         startingSet = sw != null
-        startingSlider = (sw ?: 175.0).toFloat().coerceIn(weightSliderRange.start, weightSliderRange.endInclusive)
+        startingSlider = snapWeightSlider((sw ?: 175.0).toFloat())
     }
 
     pendingRestorePreview?.let { preview ->
@@ -171,9 +183,9 @@ fun SettingsScreen() {
                 title = { Text("Restore backup?") },
                 text = {
                     Text(
-                        "This replaces all habits, sessions, logs, to-dos, and saved settings on this device.\n\n" +
+                        "This replaces all habits, sessions, logs, to-dos, projects, and saved settings on this device.\n\n" +
                             "Backup: ${preview.habits.size} habits · ${preview.sessions.size} sessions · " +
-                            "${preview.tasks.size} to-dos · ${preview.logs.size} logs · ${preview.kv.size} settings rows.",
+                            "${preview.tasks.size} to-dos · ${preview.projects.size} projects · ${preview.logs.size} logs · ${preview.kv.size} settings rows.",
                     )
                 },
                 confirmButton = {
@@ -184,12 +196,11 @@ fun SettingsScreen() {
                                     repo.importBackupJson(jsonPayload)
                                     pendingRestoreJson = null
                                     pendingRestorePreview = null
-                                    freezeSteps = (repo.getKv(KvKeys.FREEZES_ALLOWED)?.toIntOrNull() ?: 3)
-                                        .coerceIn(0, KvKeys.MAX_STREAK_FREEZES_PER_MONTH)
                                     themeMode = repo.getKv(KvKeys.THEME_MODE) ?: "system"
                                     applyTheme(themeMode)
                                     notificationsEnabled = repo.getKv(KvKeys.NOTIFICATIONS_ENABLED) == "true"
                                     notificationTime = repo.getKv(KvKeys.NOTIFICATION_TIME) ?: "09:00"
+                                    notificationEveningTime = repo.getKv(KvKeys.NOTIFICATION_EVENING_TIME) ?: "20:00"
                                     val tw = repo.targetWeightLbs()
                                     targetSet = tw != null
                                     targetSlider = (tw ?: 175.0).toFloat()
@@ -223,9 +234,51 @@ fun SettingsScreen() {
         }
     }
 
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("Erase all data?") },
+            text = {
+                Text(
+                    "This removes every habit, session, to-do, log, and saved setting on this device. " +
+                        "It cannot be undone. The app will use the same defaults as a fresh install.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            try {
+                                repo.resetAllLocalData()
+                                app.rescheduleNotificationsFromSettings()
+                                settingsLoadTick++
+                                backupFeedback = "All data removed. Defaults restored."
+                                showResetConfirm = false
+                            } catch (e: Exception) {
+                                backupFeedback = e.message ?: "Reset failed."
+                                showResetConfirm = false
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("Erase everything")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     if (showTimePicker) {
-        key(notificationTime) {
-            val (h24, min0) = parseNotificationTimeTo24(notificationTime)
+        val pickerTime = if (timePickerTarget == "evening") notificationEveningTime else notificationTime
+        key(pickerTime) {
+            val (h24, min0) = parseNotificationTimeTo24(pickerTime)
             val pickerHolder = remember { mutableStateOf<TimePicker?>(null) }
             AlertDialog(
                 onDismissRequest = { showTimePicker = false },
@@ -233,7 +286,12 @@ fun SettingsScreen() {
                     TextButton(
                         onClick = {
                             pickerHolder.value?.let { tp ->
-                                notificationTime = "%02d:%02d".format(tp.hour, tp.minute)
+                                val formatted = "%02d:%02d".format(tp.hour, tp.minute)
+                                if (timePickerTarget == "evening") {
+                                    notificationEveningTime = formatted
+                                } else {
+                                    notificationTime = formatted
+                                }
                             }
                             showTimePicker = false
                         },
@@ -301,7 +359,10 @@ fun SettingsScreen() {
         }
         Spacer(Modifier.height(20.dp))
         Text("Notifications", style = MaterialTheme.typography.labelLarge)
-        SectionCaption("Daily reminder to open Momentum and log habits. Exact time may vary slightly on some devices (inexact alarm).")
+        SectionCaption(
+            "Morning and evening reminders to log habits. Skipped for a slot if you already logged activity that day. " +
+                "Exact times may vary slightly on some devices (inexact alarm).",
+        )
         Spacer(Modifier.height(8.dp))
         Row(
             Modifier.fillMaxWidth(),
@@ -351,7 +412,7 @@ fun SettingsScreen() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text("Reminder time", style = MaterialTheme.typography.bodyLarge)
+                Text("Morning reminder", style = MaterialTheme.typography.bodyLarge)
                 Text(
                     formatNotificationTime12h(notificationTime),
                     style = MaterialTheme.typography.titleMedium,
@@ -359,7 +420,34 @@ fun SettingsScreen() {
                 )
             }
             TextButton(
-                onClick = { showTimePicker = true },
+                onClick = {
+                    timePickerTarget = "morning"
+                    showTimePicker = true
+                },
+                enabled = notificationsEnabled,
+            ) {
+                Text("Change")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Evening reminder", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    formatNotificationTime12h(notificationEveningTime),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            TextButton(
+                onClick = {
+                    timePickerTarget = "evening"
+                    showTimePicker = true
+                },
                 enabled = notificationsEnabled,
             ) {
                 Text("Change")
@@ -386,10 +474,11 @@ fun SettingsScreen() {
         Slider(
             value = targetSlider,
             onValueChange = {
-                targetSlider = it
+                targetSlider = snapWeightSlider(it)
                 targetSet = true
             },
             valueRange = weightSliderRange,
+            steps = weightSliderSteps,
         )
         Spacer(Modifier.height(16.dp))
         Text("Starting weight (lbs)", style = MaterialTheme.typography.labelLarge)
@@ -412,25 +501,11 @@ fun SettingsScreen() {
         Slider(
             value = startingSlider,
             onValueChange = {
-                startingSlider = it
+                startingSlider = snapWeightSlider(it)
                 startingSet = true
             },
             valueRange = weightSliderRange,
-        )
-        Spacer(Modifier.height(20.dp))
-        Text("Streak freezes per month", style = MaterialTheme.typography.labelLarge)
-        SectionCaption("Used when a scheduled session is missed (up to ${KvKeys.MAX_STREAK_FREEZES_PER_MONTH} per month).")
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "$freezeSteps",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Slider(
-            value = freezeSteps.toFloat(),
-            onValueChange = { freezeSteps = it.roundToInt().coerceIn(0, KvKeys.MAX_STREAK_FREEZES_PER_MONTH) },
-            valueRange = 0f..KvKeys.MAX_STREAK_FREEZES_PER_MONTH.toFloat(),
-            steps = KvKeys.MAX_STREAK_FREEZES_PER_MONTH - 1,
+            steps = weightSliderSteps,
         )
         Spacer(Modifier.height(24.dp))
         Text("Backup & restore", style = MaterialTheme.typography.labelLarge)
@@ -457,6 +532,17 @@ fun SettingsScreen() {
             ) {
                 Text("Import data")
             }
+            OutlinedButton(
+                onClick = {
+                    backupFeedback = null
+                    showResetConfirm = true
+                },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text("Reset")
+            }
         }
         backupFeedback?.let { msg ->
             Spacer(Modifier.height(6.dp))
@@ -477,11 +563,8 @@ fun SettingsScreen() {
         Button(
             onClick = {
                 scope.launch {
-                    repo.setKv(
-                        KvKeys.FREEZES_ALLOWED,
-                        freezeSteps.coerceIn(0, KvKeys.MAX_STREAK_FREEZES_PER_MONTH).toString(),
-                    )
                     repo.setKv(KvKeys.NOTIFICATION_TIME, notificationTime)
+                    repo.setKv(KvKeys.NOTIFICATION_EVENING_TIME, notificationEveningTime)
                     repo.setKv(
                         KvKeys.TARGET_WEIGHT_LBS,
                         if (targetSet) "%.1f".format(targetSlider) else "",

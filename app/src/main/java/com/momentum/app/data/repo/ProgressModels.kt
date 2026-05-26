@@ -16,6 +16,8 @@ enum class CalendarDayEmoji {
     X_MARK,
     /** Good and bad both non-zero and equal. */
     TIE,
+    /** Incomplete project due this calendar day (today or future only); shown as "!". Overrides habit emoji. */
+    PROJECT_DUE,
 }
 
 data class CalendarDayState(
@@ -33,7 +35,6 @@ data class GoodBadSnapshot(
     val good: Double,
     val bad: Double,
     val hasPlannedScheduledSessions: Boolean,
-    val anyPositiveMissedScheduled: Boolean,
 )
 
 data class WeightPoint(
@@ -43,13 +44,9 @@ data class WeightPoint(
 )
 
 data class StreakSnapshot(
-    /** Consecutive days with more good than bad (trending up). */
+    /** Consecutive days with any logged habit activity. */
     val current: Int,
     val longest: Int,
-    /** Consecutive days with only good activity (no bad score). */
-    val perfectCurrent: Int,
-    val perfectLongest: Int,
-    val freezesRemaining: Int,
 )
 
 enum class SessionDayTile {
@@ -65,8 +62,8 @@ data class HabitWeekDay(
 )
 
 /**
- * Daily habit scoring for Habit Trends: unscheduled log sums plus +1 per completed scheduled session
- * (by habit valence). [net] = good − bad.
+ * Daily habit scoring for Habit Trends: unscheduled log sums plus scheduled sessions
+ * (complete / miss / past planned), aligned with the Progress calendar. [net] = good − bad.
  */
 data class HabitTrendDay(
     val date: LocalDate,

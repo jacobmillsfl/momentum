@@ -15,4 +15,6 @@ data class HabitEntity(
     val notes: String?,
     val archivedAt: Long?,
     val createdAt: Long,
+    /** [com.momentum.app.domain.HabitGoalDomain] name, or null before migration/classification. */
+    val goalDomain: String?,
 )

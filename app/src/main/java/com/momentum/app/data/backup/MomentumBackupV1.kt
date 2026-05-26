@@ -3,11 +3,12 @@ package com.momentum.app.data.backup
 import com.momentum.app.data.local.entity.HabitEntity
 import com.momentum.app.data.local.entity.KvEntity
 import com.momentum.app.data.local.entity.LogEntity
+import com.momentum.app.data.local.entity.ProjectEntity
 import com.momentum.app.data.local.entity.SessionEntity
 import com.momentum.app.data.local.entity.TaskEntity
 import kotlinx.serialization.Serializable
 
-const val MOMENTUM_BACKUP_SCHEMA_VERSION = 1
+const val MOMENTUM_BACKUP_SCHEMA_VERSION = 2
 
 @Serializable
 data class MomentumBackupV1(
@@ -18,6 +19,17 @@ data class MomentumBackupV1(
     val tasks: List<TaskBackupRow>,
     val logs: List<LogBackupRow>,
     val kv: List<KvBackupRow>,
+    val projects: List<ProjectBackupRow> = emptyList(),
+)
+
+@Serializable
+data class ProjectBackupRow(
+    val id: String,
+    val title: String,
+    val description: String?,
+    val createdAtMs: Long,
+    val dueEpochDay: Long?,
+    val completedAtMs: Long?,
 )
 
 @Serializable
@@ -32,6 +44,7 @@ data class HabitBackupRow(
     val notes: String?,
     val archivedAt: Long?,
     val createdAt: Long,
+    val goalDomain: String? = null,
 )
 
 @Serializable
@@ -85,6 +98,7 @@ fun HabitEntity.toBackupRow() = HabitBackupRow(
     notes = notes,
     archivedAt = archivedAt,
     createdAt = createdAt,
+    goalDomain = goalDomain,
 )
 
 fun HabitBackupRow.toEntity() = HabitEntity(
@@ -98,6 +112,7 @@ fun HabitBackupRow.toEntity() = HabitEntity(
     notes = notes,
     archivedAt = archivedAt,
     createdAt = createdAt,
+    goalDomain = goalDomain,
 )
 
 fun SessionEntity.toBackupRow() = SessionBackupRow(
@@ -165,3 +180,21 @@ fun LogBackupRow.toEntity() = LogEntity(
 fun KvEntity.toBackupRow() = KvBackupRow(key = key, value = value)
 
 fun KvBackupRow.toEntity() = KvEntity(key = key, value = value)
+
+fun ProjectEntity.toBackupRow() = ProjectBackupRow(
+    id = id,
+    title = title,
+    description = description,
+    createdAtMs = createdAtMs,
+    dueEpochDay = dueEpochDay,
+    completedAtMs = completedAtMs,
+)
+
+fun ProjectBackupRow.toEntity() = ProjectEntity(
+    id = id,
+    title = title,
+    description = description,
+    createdAtMs = createdAtMs,
+    dueEpochDay = dueEpochDay,
+    completedAtMs = completedAtMs,
+)

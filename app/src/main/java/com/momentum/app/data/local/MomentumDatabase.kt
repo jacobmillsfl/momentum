@@ -5,11 +5,15 @@ import androidx.room.RoomDatabase
 import com.momentum.app.data.local.dao.HabitDao
 import com.momentum.app.data.local.dao.KvDao
 import com.momentum.app.data.local.dao.LogDao
+import com.momentum.app.data.local.dao.MigrationDao
+import com.momentum.app.data.local.dao.ProjectDao
 import com.momentum.app.data.local.dao.SessionDao
 import com.momentum.app.data.local.dao.TaskDao
 import com.momentum.app.data.local.entity.HabitEntity
 import com.momentum.app.data.local.entity.KvEntity
 import com.momentum.app.data.local.entity.LogEntity
+import com.momentum.app.data.local.entity.MigrationStateEntity
+import com.momentum.app.data.local.entity.ProjectEntity
 import com.momentum.app.data.local.entity.SessionEntity
 import com.momentum.app.data.local.entity.TaskEntity
 
@@ -20,8 +24,10 @@ import com.momentum.app.data.local.entity.TaskEntity
         LogEntity::class,
         KvEntity::class,
         TaskEntity::class,
+        MigrationStateEntity::class,
+        ProjectEntity::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = false,
 )
 abstract class MomentumDatabase : RoomDatabase() {
@@ -30,4 +36,6 @@ abstract class MomentumDatabase : RoomDatabase() {
     abstract fun logDao(): LogDao
     abstract fun kvDao(): KvDao
     abstract fun taskDao(): TaskDao
+    abstract fun migrationDao(): MigrationDao
+    abstract fun projectDao(): ProjectDao
 }

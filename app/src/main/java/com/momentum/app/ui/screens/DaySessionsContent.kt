@@ -30,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import com.momentum.app.data.local.entity.HabitEntity
 import com.momentum.app.data.local.entity.LogEntity
 import com.momentum.app.data.local.entity.TaskEntity
 import com.momentum.app.data.repo.SessionWithHabit
@@ -39,21 +38,10 @@ import com.momentum.app.domain.SessionStatus
 import com.momentum.app.domain.TrackingMode
 import com.momentum.app.ui.LocalRepository
 import kotlinx.coroutines.launch
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-
-private val json = Json { ignoreUnknownKeys = true }
-
-private fun parseCategories(categoriesJson: String): List<String> = try {
-    json.decodeFromString(ListSerializer(serializer<String>()), categoriesJson)
-} catch (_: Exception) {
-    emptyList()
-}
 
 private val logTimeFormatter = DateTimeFormatter.ofPattern("MMM d, h:mm a")
 
@@ -175,8 +163,6 @@ fun UnscheduledRowCard(
 @Composable
 private fun SessionCardTitleBlock(
     row: SessionWithHabit,
-    isExerciseSession: Boolean,
-    categoriesLine: String,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -186,13 +172,6 @@ private fun SessionCardTitleBlock(
                 "Weigh-in · lbs",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.tertiary,
-            )
-        }
-        if (isExerciseSession) {
-            Text(
-                categoriesLine.ifEmpty { "—" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Text(
@@ -232,7 +211,6 @@ fun SessionCardExpandable(
     }
 
     val isExerciseSession = row.habitTrackingMode != TrackingMode.WEIGHT.name
-    val cats = parseCategories(row.session.categoriesJson).joinToString(", ")
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             if (isExerciseSession) {
@@ -242,7 +220,7 @@ fun SessionCardExpandable(
                         .combinedClickable(onClick = onToggle, onLongClick = {}),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    SessionCardTitleBlock(row, isExerciseSession, cats, Modifier.weight(1f))
+                    SessionCardTitleBlock(row, Modifier.weight(1f))
                     Text(if (expanded) "▼" else "▶", style = MaterialTheme.typography.bodyLarge)
                 }
             } else {
@@ -250,7 +228,7 @@ fun SessionCardExpandable(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    SessionCardTitleBlock(row, isExerciseSession, cats, Modifier.weight(1f))
+                    SessionCardTitleBlock(row, Modifier.weight(1f))
                 }
             }
             val todosIncomplete =

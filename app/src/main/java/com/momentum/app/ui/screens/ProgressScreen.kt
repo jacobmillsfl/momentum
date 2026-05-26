@@ -1,6 +1,7 @@
 package com.momentum.app.ui.screens
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,8 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,11 +53,16 @@ import com.momentum.app.data.repo.CalendarDayState
 import com.momentum.app.data.repo.StreakSnapshot
 import com.momentum.app.data.repo.HabitTrendDay
 import com.momentum.app.data.repo.WeightPoint
+import com.momentum.app.domain.HabitGoalDomain
+import com.momentum.app.data.local.entity.ProjectEntity
 import com.momentum.app.ui.LocalRepository
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.time.format.TextStyle
 import java.util.Locale
 
@@ -83,8 +91,11 @@ fun ProgressScreen() {
     var hasAnyWeighIn by remember { mutableStateOf(false) }
     var weightWindowDays by remember { mutableIntStateOf(7) }
     var windowDays by remember { mutableIntStateOf(7) }
-    var habitTrend by remember { mutableStateOf<List<HabitTrendDay>>(emptyList()) }
+    var habitTrendMind by remember { mutableStateOf<List<HabitTrendDay>>(emptyList()) }
+    var habitTrendBody by remember { mutableStateOf<List<HabitTrendDay>>(emptyList()) }
     var pastCalendarDay by remember { mutableStateOf<LocalDate?>(null) }
+    var projectDueModalDate by remember { mutableStateOf<LocalDate?>(null) }
+    var projectDueModalRows by remember { mutableStateOf<List<ProjectEntity>>(emptyList()) }
     var targetWeightLbs by remember { mutableStateOf<Double?>(null) }
     var startingWeightLbs by remember { mutableStateOf<Double?>(null) }
 
@@ -94,7 +105,8 @@ fun ProgressScreen() {
             calendarDays = repo.scheduledCalendarFiveWeeks()
             hasAnyWeighIn = repo.weightHistory().isNotEmpty()
             weightPoints = repo.weightHistoryForWindow(weightWindowDays)
-            habitTrend = repo.habitTrendDaily(windowDays)
+            habitTrendMind = repo.habitTrendDaily(windowDays, HabitGoalDomain.MIND)
+            habitTrendBody = repo.habitTrendDaily(windowDays, HabitGoalDomain.BODY)
             targetWeightLbs = repo.targetWeightLbs()
             startingWeightLbs = repo.startingWeightLbs()
         }
@@ -105,7 +117,8 @@ fun ProgressScreen() {
         calendarDays = repo.scheduledCalendarFiveWeeks()
         hasAnyWeighIn = repo.weightHistory().isNotEmpty()
         weightPoints = repo.weightHistoryForWindow(weightWindowDays)
-        habitTrend = repo.habitTrendDaily(windowDays)
+        habitTrendMind = repo.habitTrendDaily(windowDays, HabitGoalDomain.MIND)
+        habitTrendBody = repo.habitTrendDaily(windowDays, HabitGoalDomain.BODY)
         targetWeightLbs = repo.targetWeightLbs()
         startingWeightLbs = repo.startingWeightLbs()
     }
@@ -129,7 +142,7 @@ fun ProgressScreen() {
         val snap = streak
         if (snap != null) {
             Text(
-                "Streak ${snap.current} days (perfect ${snap.perfectCurrent}) · Best ${snap.longest} / ${snap.perfectLongest} · Freezes ${snap.freezesRemaining}",
+                "Streak ${snap.current} days · Best ${snap.longest}",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -161,12 +174,13 @@ fun ProgressScreen() {
         }
         Spacer(Modifier.height(8.dp))
         CalendarLegendRow("💪", "Workout on your schedule (future days only)")
+        CalendarLegendRow("❗", "Incomplete project due that day (today or future; overrides other icons)")
         Spacer(Modifier.height(12.dp))
         if (calendarDays.isEmpty()) {
             Text("No data yet.", style = MaterialTheme.typography.bodyMedium)
         } else {
             Text(
-                "Tap a past day to insert or edit habit entries.",
+                "Tap a past day to insert or edit habit entries. Tap ❗ to see projects due that day.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -174,6 +188,12 @@ fun ProgressScreen() {
             FiveWeekCalendar(
                 days = calendarDays,
                 onPastDateClick = { pastCalendarDay = it },
+                onProjectDueDayClick = { date ->
+                    scope.launch {
+                        projectDueModalRows = repo.projectsIncompleteDueOn(date)
+                        projectDueModalDate = date
+                    }
+                },
             )
         }
 
@@ -227,7 +247,7 @@ fun ProgressScreen() {
         Text("Habit Trends", style = MaterialTheme.typography.titleMedium)
         Text(
             "Daily score: good habits minus bad (unscheduled counts + 1 per completed scheduled session). " +
-                "Solid line is cumulative momentum; dashed line is a linear trend over that window.",
+                "Solid line is cumulative momentum; dashed line is a linear trend. Mind and Body are charted separately.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -248,16 +268,42 @@ fun ProgressScreen() {
             }
         }
         Spacer(Modifier.height(8.dp))
-        if (habitTrend.isEmpty()) {
+        if (habitTrendMind.isEmpty() && habitTrendBody.isEmpty()) {
             Text(
                 "No data in this window.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
+            val windowLabel = if (windowDays == 365) "1y (365 d)" else "$windowDays d"
+            Text(
+                "Mind habit trends",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(6.dp))
+            val mindMomentum = MaterialTheme.colorScheme.primary
+            val mindTrend = MaterialTheme.colorScheme.secondary
             HabitMomentumChart(
-                days = habitTrend,
-                windowLabel = if (windowDays == 365) "1y (365 d)" else "$windowDays d",
+                days = habitTrendMind,
+                windowLabel = windowLabel,
+                momentumColor = mindMomentum,
+                trendColor = mindTrend,
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "Body habit trends",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(6.dp))
+            val bodyMomentum = MaterialTheme.colorScheme.tertiary
+            val bodyTrend = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
+            HabitMomentumChart(
+                days = habitTrendBody,
+                windowLabel = windowLabel,
+                momentumColor = bodyMomentum,
+                trendColor = bodyTrend,
             )
         }
     }
@@ -267,12 +313,85 @@ fun ProgressScreen() {
         onDismiss = { pastCalendarDay = null },
         onDataChanged = { refresh() },
     )
+
+    val dueModal = projectDueModalDate
+    if (dueModal != null) {
+        ProjectDueSummaryDialog(
+            date = dueModal,
+            projects = projectDueModalRows,
+            onDismiss = {
+                projectDueModalDate = null
+                projectDueModalRows = emptyList()
+                refresh()
+            },
+        )
+    }
+}
+
+private val projectDetailDateFmt: DateTimeFormatter =
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
+
+@Composable
+private fun ProjectDueSummaryDialog(
+    date: LocalDate,
+    projects: List<ProjectEntity>,
+    onDismiss: () -> Unit,
+) {
+    val zone = ZoneId.systemDefault()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Projects due ${date.format(projectDetailDateFmt)}") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (projects.isEmpty()) {
+                    Text("No open projects due this day.", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    projects.forEachIndexed { index, p ->
+                        if (index > 0) {
+                            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                        }
+                        Text(p.title, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Created: ${Instant.ofEpochMilli(p.createdAtMs).atZone(zone).toLocalDate().format(projectDetailDateFmt)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        p.dueEpochDay?.let { ed ->
+                            val due = LocalDate.ofEpochDay(ed)
+                            Text(
+                                "Due: ${due.format(projectDetailDateFmt)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        p.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                            Spacer(Modifier.height(6.dp))
+                            Text(desc, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        p.completedAtMs?.let { c ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Completed: ${Instant.ofEpochMilli(c).atZone(zone).toLocalDate().format(projectDetailDateFmt)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+    )
 }
 
 @Composable
 private fun FiveWeekCalendar(
     days: List<CalendarDayState>,
     onPastDateClick: (LocalDate) -> Unit,
+    onProjectDueDayClick: (LocalDate) -> Unit,
 ) {
     val today = LocalDate.now()
     val first = days.first().date
@@ -312,8 +431,13 @@ private fun FiveWeekCalendar(
                         DayCell(
                             cell = cell,
                             isToday = cell.date == today,
-                            onClick = if (isPast) {
+                            onPastDateClick = if (isPast) {
                                 { onPastDateClick(cell.date) }
+                            } else {
+                                null
+                            },
+                            onProjectDueDayClick = if (cell.emoji == CalendarDayEmoji.PROJECT_DUE) {
+                                { onProjectDueDayClick(cell.date) }
                             } else {
                                 null
                             },
@@ -346,7 +470,8 @@ private fun CalendarLegendRow(emoji: String, caption: String) {
 private fun DayCell(
     cell: CalendarDayState,
     isToday: Boolean,
-    onClick: (() -> Unit)?,
+    onPastDateClick: (() -> Unit)?,
+    onProjectDueDayClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(10.dp)
@@ -364,7 +489,13 @@ private fun DayCell(
             },
         )
         .background(color = bg, shape = shape)
-        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .then(
+            when {
+                onProjectDueDayClick != null -> Modifier.clickable(onClick = onProjectDueDayClick)
+                onPastDateClick != null -> Modifier.clickable(onClick = onPastDateClick)
+                else -> Modifier
+            },
+        )
         .padding(vertical = 6.dp)
     Column(
         modifier = mod,
@@ -383,6 +514,7 @@ private fun DayCell(
             CalendarDayEmoji.X_MARK -> "❌"
             CalendarDayEmoji.TIE -> "⚖"
             CalendarDayEmoji.REST -> "·"
+            CalendarDayEmoji.PROJECT_DUE -> "❗"
         }
         Row(
             modifier = Modifier.height(22.dp),
@@ -409,9 +541,11 @@ private fun WeightLineChart(
     startingWeightLbs: Double?,
     windowDays: Int,
 ) {
-    val lineColor = MaterialTheme.colorScheme.primary
-    val targetColor = MaterialTheme.colorScheme.tertiary
-    val startingColor = Color(0xFFC62828)
+    val dark = isSystemInDarkTheme()
+    // Blue–teal pastels distinct from Mind (primary) / Body (tertiary) momentum charts; avoid secondary (often yellow).
+    val lineColor = if (dark) Color(0xFF80CBC4) else Color(0xFF00897B)
+    val targetColor = if (dark) Color(0xFF4FC3F7) else Color(0xFF29B6F6)
+    val startingColor = MaterialTheme.colorScheme.error
     val refYs = listOfNotNull(targetWeightLbs, startingWeightLbs)
     val maxY = (points.map { it.value } + refYs).maxOrNull() ?: 0.0
     val minY = (points.map { it.value } + refYs).minOrNull() ?: 0.0
@@ -584,9 +718,24 @@ private fun linearRegressionOnSeries(y: List<Double>): Pair<Double, Double> {
 private fun HabitMomentumChart(
     days: List<HabitTrendDay>,
     windowLabel: String,
+    momentumColor: Color,
+    trendColor: Color,
 ) {
-    val momentumColor = MaterialTheme.colorScheme.primary
-    val trendColor = MaterialTheme.colorScheme.tertiary
+    if (days.isEmpty()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.25f)),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Text(
+                "No data in this window.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
+            )
+        }
+        return
+    }
     val zeroLineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
     val nets = remember(days) { days.map { it.net } }
     val cumulative = remember(days) { cumulativeMomentum(nets) }
@@ -731,7 +880,7 @@ private fun HabitMomentumChart(
             Text(
                 trendSlopeLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+                color = trendColor,
                 modifier = Modifier.padding(top = 4.dp),
             )
             Row(

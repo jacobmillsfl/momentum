@@ -79,9 +79,20 @@ interface LogDao {
     @Update
     suspend fun update(entity: LogEntity)
 
+    @Query(
+        """
+        SELECT COUNT(*) FROM logs
+        WHERE loggedAt >= :startMs AND loggedAt < :endMs
+        """,
+    )
+    suspend fun countLogsBetween(startMs: Long, endMs: Long): Int
+
     @Query("SELECT * FROM logs ORDER BY loggedAt ASC")
     suspend fun listAllForBackup(): List<LogEntity>
 
     @Query("DELETE FROM logs")
     suspend fun deleteAll()
+
+    @Query("UPDATE logs SET habitId = :newHabitId WHERE habitId = :oldHabitId")
+    suspend fun reassignHabitId(oldHabitId: String, newHabitId: String)
 }

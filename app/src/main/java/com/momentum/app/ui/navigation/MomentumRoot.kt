@@ -23,19 +23,21 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.momentum.app.ui.screens.HabitDetailScreen
+import com.momentum.app.ui.screens.HabitEditScreen
 import com.momentum.app.ui.screens.HabitWizardScreen
-import com.momentum.app.ui.screens.HabitsScreen
+import com.momentum.app.ui.screens.TasksScreen
 import com.momentum.app.ui.screens.ProgressScreen
 import com.momentum.app.ui.screens.SettingsScreen
 import com.momentum.app.ui.screens.TodayScreen
 
 object Dest {
     const val TODAY = "today"
-    const val HABITS = "habits"
+    const val TASKS = "tasks"
     const val PROGRESS = "progress"
     const val SETTINGS = "settings"
     const val HABIT_NEW = "habit_new"
     const val HABIT_DETAIL = "habit_detail/{habitId}"
+    const val HABIT_EDIT = "habit_edit/{habitId}"
 }
 
 private data class Tab(val route: String, val label: String)
@@ -43,7 +45,7 @@ private data class Tab(val route: String, val label: String)
 private val tabs = listOf(
     Tab(Dest.PROGRESS, "Progress"),
     Tab(Dest.TODAY, "Today"),
-    Tab(Dest.HABITS, "Habits"),
+    Tab(Dest.TASKS, "Tasks"),
     Tab(Dest.SETTINGS, "Settings"),
 )
 
@@ -53,7 +55,9 @@ fun MomentumRoot() {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val current = navBackStackEntry?.destination
     val route = current?.route.orEmpty()
-    val showBar = route != Dest.HABIT_NEW && !route.startsWith("habit_detail")
+    val showBar = route != Dest.HABIT_NEW &&
+        !route.startsWith("habit_detail") &&
+        !route.startsWith("habit_edit")
 
     Scaffold(
         bottomBar = {
@@ -77,7 +81,7 @@ fun MomentumRoot() {
                                     imageVector = when (tab.route) {
                                         Dest.PROGRESS -> Icons.Default.BarChart
                                         Dest.TODAY -> Icons.Default.CalendarToday
-                                        Dest.HABITS -> Icons.AutoMirrored.Filled.List
+                                        Dest.TASKS -> Icons.AutoMirrored.Filled.List
                                         else -> Icons.Default.Settings
                                     },
                                     contentDescription = tab.label,
@@ -98,8 +102,8 @@ fun MomentumRoot() {
             composable(Dest.TODAY) {
                 TodayScreen()
             }
-            composable(Dest.HABITS) {
-                HabitsScreen(
+            composable(Dest.TASKS) {
+                TasksScreen(
                     onNewHabit = { navController.navigate(Dest.HABIT_NEW) },
                     onOpenHabit = { id ->
                         navController.navigate("habit_detail/$id")
@@ -117,6 +121,22 @@ fun MomentumRoot() {
             ) { entry ->
                 val id = entry.arguments?.getString("habitId") ?: return@composable
                 HabitDetailScreen(
+                    habitId = id,
+                    onBack = { navController.popBackStack() },
+                    onEdit = { navController.navigate("habit_edit/$id") },
+                    onMergedToNewHabit = { newId ->
+                        navController.navigate("habit_detail/$newId") {
+                            popUpTo("habit_detail/$id") { inclusive = true }
+                        }
+                    },
+                )
+            }
+            composable(
+                route = Dest.HABIT_EDIT,
+                arguments = listOf(navArgument("habitId") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("habitId") ?: return@composable
+                HabitEditScreen(
                     habitId = id,
                     onBack = { navController.popBackStack() },
                 )

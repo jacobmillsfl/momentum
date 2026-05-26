@@ -59,4 +59,21 @@ interface SessionDao {
 
     @Query("DELETE FROM sessions")
     suspend fun deleteAll()
+
+    @Query("UPDATE sessions SET habitId = :newHabitId WHERE habitId = :oldHabitId")
+    suspend fun reassignHabitId(oldHabitId: String, newHabitId: String)
+
+    @Query("DELETE FROM sessions WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("SELECT * FROM sessions WHERE habitId = :habitId ORDER BY scheduledAt ASC")
+    suspend fun sessionsForHabitOrdered(habitId: String): List<SessionEntity>
+
+    @Query(
+        """
+        DELETE FROM sessions WHERE habitId = :habitId
+        AND scheduledAt >= :fromMs AND status = :plannedStatus
+        """,
+    )
+    suspend fun deleteFuturePlannedSessions(habitId: String, fromMs: Long, plannedStatus: String)
 }

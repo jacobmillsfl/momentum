@@ -210,6 +210,8 @@ fun CalendarPastDayFlow(
                                                 h.title,
                                                 h.trackingMode,
                                                 h.unit,
+                                                h.valence,
+                                                h.goalDomain,
                                             )
                                             when (s.status) {
                                                 SessionStatus.COMPLETED.name -> {

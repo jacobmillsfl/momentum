@@ -3,6 +3,7 @@ package com.momentum.app
 import android.app.Application
 import androidx.room.Room
 import com.momentum.app.data.local.MomentumDatabase
+import com.momentum.app.data.local.MomentumMigrations
 import com.momentum.app.data.repo.MomentumRepository
 import com.momentum.app.notify.DailyReminderScheduler
 import com.momentum.app.notify.MomentumNotificationChannels
@@ -26,7 +27,9 @@ class MomentumApp : Application() {
             applicationContext,
             MomentumDatabase::class.java,
             "momentum.db",
-        ).fallbackToDestructiveMigration()
+        )
+            .addMigrations(MomentumMigrations.MIGRATION_3_4, MomentumMigrations.MIGRATION_4_5)
+            .fallbackToDestructiveMigration()
             .build()
         repository = MomentumRepository(database)
         appScope.launch(Dispatchers.IO) {

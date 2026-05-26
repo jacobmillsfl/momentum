@@ -16,7 +16,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +39,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.momentum.app.data.local.entity.HabitEntity
 import com.momentum.app.data.local.entity.LogEntity
 import com.momentum.app.data.local.entity.SessionEntity
+import com.momentum.app.domain.HabitGoalDomain
 import com.momentum.app.domain.HabitValence
 import com.momentum.app.domain.TrackingMode
 import com.momentum.app.ui.LocalRepository
@@ -53,6 +56,8 @@ private val logFmt = DateTimeFormatter.ofPattern("MMM d, h:mm a")
 fun HabitDetailScreen(
     habitId: String,
     onBack: () -> Unit,
+    onEdit: () -> Unit,
+    onMergedToNewHabit: (newHabitId: String) -> Unit,
 ) {
     val repo = LocalRepository.current
     val scope = rememberCoroutineScope()
@@ -62,6 +67,13 @@ fun HabitDetailScreen(
     var logs by remember { mutableStateOf<List<LogEntity>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var confirmArchive by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var showMerge by remember { mutableStateOf(false) }
+    var mergeNewTitle by remember { mutableStateOf("") }
+    var mergeOtherId by remember { mutableStateOf<String?>(null) }
+    var mergeCandidates by remember { mutableStateOf<List<HabitEntity>>(emptyList()) }
+    var mergeBusy by remember { mutableStateOf(false) }
+    var mergeError by remember { mutableStateOf<String?>(null) }
 
     fun load() {
         scope.launch {
@@ -83,6 +95,29 @@ fun HabitDetailScreen(
 
     LaunchedEffect(habitId) {
         load()
+    }
+
+    LaunchedEffect(showMerge, habitId, habit) {
+        if (!showMerge || habit == null) return@LaunchedEffect
+        val h = habit!!
+        mergeCandidates = repo.listActiveHabits()
+            .filter { o ->
+                o.id != habitId &&
+                    o.id != h.id &&
+                    o.valence == h.valence &&
+                    o.isScheduled == h.isScheduled &&
+                    o.trackingMode == h.trackingMode &&
+                    o.goalDomain != null &&
+                    h.goalDomain != null &&
+                    o.goalDomain == h.goalDomain
+            }
+            .sortedBy { it.title.lowercase() }
+    }
+
+    LaunchedEffect(mergeCandidates, habitId) {
+        if (mergeOtherId != null && mergeOtherId == habitId) {
+            mergeOtherId = null
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -146,14 +181,22 @@ fun HabitDetailScreen(
                 color = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(4.dp))
+            val goalDomain = h.goalDomain?.let { runCatching { HabitGoalDomain.valueOf(it) }.getOrNull() }
+            if (goalDomain != null) {
+                Text(
+                    when (goalDomain) {
+                        HabitGoalDomain.MIND -> "Focus: Mind (mental, emotional, social)"
+                        HabitGoalDomain.BODY -> "Focus: Body (physical)"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
             Text(
                 if (h.isScheduled) "Scheduled" else "Unscheduled · ${h.trackingMode ?: "—"}",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            h.unit?.let { u ->
-                Spacer(Modifier.height(4.dp))
-                Text("Unit: $u", style = MaterialTheme.typography.bodySmall)
-            }
             h.notes?.let { n ->
                 Spacer(Modifier.height(12.dp))
                 Text(n, style = MaterialTheme.typography.bodyMedium)
@@ -172,7 +215,7 @@ fun HabitDetailScreen(
                     sessions.sortedByDescending { it.scheduledAt }.forEach { s ->
                         val day = Instant.ofEpochMilli(s.scheduledAt).atZone(ZoneId.systemDefault()).toLocalDate()
                         val weightPart = if (h.trackingMode == TrackingMode.WEIGHT.name && s.completionValue != null) {
-                            " · ${s.completionValue} ${h.unit ?: ""}"
+                            " · ${s.completionValue} lbs"
                         } else {
                             ""
                         }
@@ -209,11 +252,42 @@ fun HabitDetailScreen(
                 }
             }
             Spacer(Modifier.height(32.dp))
+            Text("Actions", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onEdit,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Edit")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    mergeError = null
+                    mergeOtherId = null
+                    mergeNewTitle = ""
+                    showMerge = true
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Merge with another habit…")
+            }
+            Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = { confirmArchive = true },
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Archive habit")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { confirmDelete = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text("Delete habit permanently")
             }
         }
     }
@@ -238,6 +312,150 @@ fun HabitDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmArchive = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this habit?") },
+            text = {
+                Text(
+                    "This permanently deletes the habit and all of its logs and history. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            repo.deleteHabitPermanently(habitId)
+                            confirmDelete = false
+                            onBack()
+                        }
+                    },
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showMerge) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!mergeBusy) showMerge = false
+            },
+            title = { Text("Merge habits") },
+            text = {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        "Pick another habit of the same type and focus. Logs move to a new habit with the name you enter; the two originals are removed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = mergeNewTitle,
+                        onValueChange = { mergeNewTitle = it },
+                        label = { Text("New habit name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        enabled = !mergeBusy,
+                    )
+                    mergeError?.let { err ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            err,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Merge with:", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    when {
+                        mergeCandidates.isEmpty() -> {
+                            Text(
+                                "No compatible habits. Another habit must match type (positive/negative), scheduled mode, tracking kind, and Mind/Body focus.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> {
+                            mergeCandidates.forEach { o ->
+                                val selected = mergeOtherId == o.id
+                                TextButton(
+                                    onClick = {
+                                        if (o.id == habitId) return@TextButton
+                                        mergeOtherId = o.id
+                                        mergeError = null
+                                    },
+                                    enabled = !mergeBusy,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(
+                                        if (selected) "✓ ${o.title}" else o.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val other = mergeOtherId ?: return@TextButton
+                        if (other == habitId) {
+                            mergeError = "Pick a different habit than the one you are merging from"
+                            return@TextButton
+                        }
+                        val name = mergeNewTitle.trim()
+                        if (name.isEmpty()) {
+                            mergeError = "Enter a name for the merged habit"
+                            return@TextButton
+                        }
+                        mergeBusy = true
+                        mergeError = null
+                        scope.launch {
+                            try {
+                                val newId = repo.mergeHabitsIntoNew(habitId, other, name)
+                                showMerge = false
+                                onMergedToNewHabit(newId)
+                            } catch (e: IllegalStateException) {
+                                mergeError = e.message
+                            } catch (e: IllegalArgumentException) {
+                                mergeError = e.message
+                            } finally {
+                                mergeBusy = false
+                            }
+                        }
+                    },
+                    enabled = !mergeBusy &&
+                        mergeOtherId != null &&
+                        mergeOtherId != habitId &&
+                        mergeNewTitle.isNotBlank() &&
+                        mergeCandidates.isNotEmpty(),
+                ) {
+                    Text("Merge")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { if (!mergeBusy) showMerge = false },
+                    enabled = !mergeBusy,
+                ) {
+                    Text("Cancel")
+                }
             },
         )
     }

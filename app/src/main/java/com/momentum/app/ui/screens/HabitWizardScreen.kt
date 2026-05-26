@@ -1,21 +1,16 @@
 package com.momentum.app.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -24,39 +19,115 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.momentum.app.data.repo.NewHabitInput
+import com.momentum.app.domain.HabitGoalDomain
 import com.momentum.app.domain.HabitValence
 import com.momentum.app.domain.RecurrenceDayRule
 import com.momentum.app.domain.TrackingMode
 import com.momentum.app.ui.LocalRepository
 import kotlinx.coroutines.launch
 
-private val CATEGORY_PRESETS = listOf(
-    "GENERAL",
-    "UPPER_BODY",
-    "LOWER_BODY",
-    "ABS",
-    "CARDIO",
-    "STRETCH",
+private val ISO_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+private val EXAMPLE_POSITIVE_TITLES = listOf(
+    "Drink Gallon of Water",
+    "Read a Book",
+    "10-minute stretch",
+    "Walk",
+    "Wake Up Early",
+    "Eat Healthy Meal",
+    "Study",
 )
 
-private val ISO_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+private val EXAMPLE_NEGATIVE_TITLES = listOf(
+    "Eat Unhealthy Meal",
+    "Doomscroll",
+    "Alcohol",
+    "Smoking / vaping",
+    "Late-night snacking",
+    "Impulse shopping",
+    "Stayed up too late",
+    "Procrastination",
+    "Skipped workout",
+    "Energy drinks",
+    "Extra caffeine",
+    "Binge watching",
+)
+
+/** Positive habits: workout (scheduled), weigh-in (scheduled), or unscheduled count. */
+private const val KIND_WORKOUT = "WORKOUT"
+private const val KIND_WEIGH_IN = "WEIGH_IN"
+private const val KIND_UNSCHEDULED = "UNSCHEDULED"
+
+private const val DEFAULT_TITLE_WORKOUT = "Workout"
+private const val DEFAULT_TITLE_WEIGH_IN = "Weigh-in"
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PositiveExampleChips(onPick: (String) -> Unit) {
+    Text("Common examples", style = MaterialTheme.typography.labelLarge)
+    SectionDescription("Tap a suggestion to fill the title. You can edit it.")
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Good habits (positive)",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    SectionDescription("Behaviors you want to repeat, build, or keep.")
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        EXAMPLE_POSITIVE_TITLES.forEach { line ->
+            SuggestionChip(
+                onClick = { onPick(line) },
+                label = { Text(line, style = MaterialTheme.typography.bodySmall) },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NegativeExampleChips(onPick: (String) -> Unit) {
+    Text("Common examples", style = MaterialTheme.typography.labelLarge)
+    SectionDescription("Tap a suggestion to fill the title. You can edit it.")
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Bad habits to cut back (negative)",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.error,
+    )
+    SectionDescription("Behaviors you want to notice and reduce over time.")
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        EXAMPLE_NEGATIVE_TITLES.forEach { line ->
+            SuggestionChip(
+                onClick = { onPick(line) },
+                label = { Text(line, style = MaterialTheme.typography.bodySmall) },
+            )
+        }
+    }
+}
 
 @Composable
 private fun SectionDescription(text: String) {
@@ -76,22 +147,54 @@ fun HabitWizardScreen(onDone: () -> Unit) {
     var title by remember { mutableStateOf("") }
     var valence by remember { mutableStateOf<HabitValence?>(null) }
     var notes by remember { mutableStateOf("") }
-    var scheduleKind by remember { mutableStateOf<String?>(null) }
-    /** For positive scheduled: "STANDARD" (workouts/tasks) or "WEIGHT" (weigh-in). */
-    var scheduledSessionKind by remember { mutableStateOf<String?>(null) }
+    /** For positive: workout, weigh-in, or unscheduled. */
+    var positiveKind by remember { mutableStateOf<String?>(null) }
     var trackingMode by remember { mutableStateOf<TrackingMode?>(null) }
-    var unit by remember { mutableStateOf("") }
     val dayActive = remember { mutableStateMapOf<Int, Boolean>() }
-    val dayCategories = remember { mutableStateMapOf<Int, Set<String>>() }
-    val dayNotes = remember { mutableStateMapOf<Int, String>() }
     var saving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
+    var hasScheduledWorkoutAlready by remember { mutableStateOf(false) }
+    var hasScheduledWeighInAlready by remember { mutableStateOf(false) }
+    var goalDomain by remember { mutableStateOf<HabitGoalDomain?>(null) }
 
-    fun defaultCatsForDay(iso: Int) {
-        if (!dayCategories.containsKey(iso)) {
-            dayCategories[iso] = setOf("GENERAL")
-        }
+    LaunchedEffect(Unit) {
+        hasScheduledWorkoutAlready = repo.hasScheduledWorkoutHabit()
+        hasScheduledWeighInAlready = repo.hasScheduledWeighInHabit()
     }
+
+    fun selectWorkout() {
+        valence = HabitValence.POSITIVE
+        positiveKind = KIND_WORKOUT
+        trackingMode = null
+        title = DEFAULT_TITLE_WORKOUT
+        goalDomain = HabitGoalDomain.BODY
+    }
+
+    fun selectWeighIn() {
+        valence = HabitValence.POSITIVE
+        positiveKind = KIND_WEIGH_IN
+        trackingMode = TrackingMode.WEIGHT
+        title = DEFAULT_TITLE_WEIGH_IN
+        goalDomain = HabitGoalDomain.MIND
+    }
+
+    fun selectUnscheduledPositive() {
+        valence = HabitValence.POSITIVE
+        positiveKind = KIND_UNSCHEDULED
+        trackingMode = TrackingMode.COUNT
+        title = ""
+        goalDomain = null
+    }
+
+    fun selectNegative() {
+        valence = HabitValence.NEGATIVE
+        positiveKind = null
+        trackingMode = TrackingMode.COUNT
+        title = ""
+        goalDomain = null
+    }
+
+    val resolvedTitle = effectiveHabitTitle(title, valence, positiveKind)
 
     Column(
         Modifier
@@ -99,182 +202,246 @@ fun HabitWizardScreen(onDone: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
     ) {
-        Text("New habit · Step $step of 3", style = MaterialTheme.typography.titleLarge)
+        Text("New habit · Step $step of 4", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
 
         when (step) {
             1 -> {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
+                Text("Habit kind", style = MaterialTheme.typography.labelLarge)
+                SectionDescription(
+                    "Start here. Workout and Weigh-in use simple default names; name your habit on the next step only if you pick Unscheduled or Negative. " +
+                        "You can only have one scheduled workout and one scheduled weigh-in—archive an existing one in Habits to replace it.",
                 )
-                Spacer(Modifier.height(16.dp))
-                Text("Habit type", style = MaterialTheme.typography.labelLarge)
-                SectionDescription("Choose whether you are building a helpful habit or tracking something you want to cut back.")
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    HabitTypeCard(
-                        title = "Positive",
-                        description = "Behaviors you want to repeat or grow.",
-                        selected = valence == HabitValence.POSITIVE,
-                        accent = MaterialTheme.colorScheme.primary,
-                        onClick = { valence = HabitValence.POSITIVE },
+                Text("Positive", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = valence == HabitValence.POSITIVE && positiveKind == KIND_WORKOUT,
+                        onClick = { selectWorkout() },
+                        enabled = !hasScheduledWorkoutAlready,
+                        label = { Text("Workout") },
                     )
-                    HabitTypeCard(
-                        title = "Negative",
-                        description = "Behaviors you want to notice and reduce over time.",
-                        selected = valence == HabitValence.NEGATIVE,
-                        accent = MaterialTheme.colorScheme.error,
-                        onClick = { valence = HabitValence.NEGATIVE },
+                    FilterChip(
+                        selected = valence == HabitValence.POSITIVE && positiveKind == KIND_WEIGH_IN,
+                        onClick = { selectWeighIn() },
+                        enabled = !hasScheduledWeighInAlready,
+                        label = { Text("Weigh-in") },
+                    )
+                    FilterChip(
+                        selected = valence == HabitValence.POSITIVE && positiveKind == KIND_UNSCHEDULED,
+                        onClick = { selectUnscheduledPositive() },
+                        label = { Text("Other") },
+                    )
+                }
+                if (hasScheduledWorkoutAlready || hasScheduledWeighInAlready) {
+                    SectionDescription(
+                        buildString {
+                            if (hasScheduledWorkoutAlready) {
+                                append("Scheduled workout: already set up—archive it under Habits to add another here. ")
+                            }
+                            if (hasScheduledWeighInAlready) {
+                                append("Scheduled weigh-in: already set up—archive it under Habits to add another here.")
+                            }
+                        },
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("Notes (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
+                Text("Negative", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.height(8.dp))
+                FilterChip(
+                    selected = valence == HabitValence.NEGATIVE,
+                    onClick = { selectNegative() },
+                    label = { Text("Track a habit to cut back") },
                 )
-            }
-            2 -> when (valence) {
-                HabitValence.NEGATIVE -> {
-                    Text("Unit", style = MaterialTheme.typography.labelLarge)
-                    SectionDescription("Unscheduled habits use counts only. Tap + / − on Today to log how often this comes up (cigarettes, snacks, etc.).")
-                    OutlinedTextField(
-                        value = unit,
-                        onValueChange = { unit = it },
-                        label = { Text("Unit") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                }
-                HabitValence.POSITIVE -> {
-                    Text("Schedule", style = MaterialTheme.typography.labelLarge)
-                    SectionDescription("Scheduled habits get planned sessions on specific days. Unscheduled habits are logged whenever you need, without a calendar.")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = scheduleKind == "SCHEDULED",
-                            onClick = {
-                                scheduleKind = "SCHEDULED"
-                                if (scheduledSessionKind == null) scheduledSessionKind = "STANDARD"
+                Spacer(Modifier.height(16.dp))
+                when {
+                    valence == HabitValence.POSITIVE && (positiveKind == KIND_WORKOUT || positiveKind == KIND_WEIGH_IN) -> {
+                        Text("Weekly plan", style = MaterialTheme.typography.titleSmall)
+                        SectionDescription(
+                            if (positiveKind == KIND_WEIGH_IN) {
+                                "Enable each day you plan to weigh in."
+                            } else {
+                                "Enable each day you plan to work out. Add details in Notes on the next step if you like."
                             },
-                            label = { Text("Scheduled") },
                         )
-                        FilterChip(
-                            selected = scheduleKind == "UNSCHEDULED",
+                        TextButton(
                             onClick = {
-                                scheduleKind = "UNSCHEDULED"
-                                scheduledSessionKind = null
-                                trackingMode = TrackingMode.COUNT
+                                for (iso in 1..7) {
+                                    dayActive[iso] = true
+                                }
                             },
-                            label = { Text("Unscheduled") },
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    when (scheduleKind) {
-                        "SCHEDULED" -> {
-                            Text("Session type", style = MaterialTheme.typography.labelLarge)
-                            SectionDescription("Workouts use optional to-dos and notes. Weigh-in stores a measurement when you complete the session.")
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                FilterChip(
-                                    selected = scheduledSessionKind == "STANDARD",
-                                    onClick = { scheduledSessionKind = "STANDARD" },
-                                    label = { Text("Workouts / tasks") },
-                                )
-                                FilterChip(
-                                    selected = scheduledSessionKind == "WEIGHT",
-                                    onClick = { scheduledSessionKind = "WEIGHT" },
-                                    label = { Text("Weigh-in") },
-                                )
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            Text("Weekly plan", style = MaterialTheme.typography.titleSmall)
-                            SectionDescription("Enable each day you train, then choose focus tags and optional default notes for that day.")
-                            TextButton(
-                                onClick = {
-                                    for (iso in 1..7) {
-                                        dayActive[iso] = true
-                                        defaultCatsForDay(iso)
-                                    }
-                                },
-                                modifier = Modifier.padding(bottom = 8.dp),
-                            ) {
-                                Text("Select all days")
-                            }
-                            for (iso in 1..7) {
-                                val label = ISO_LABELS[iso - 1]
-                                Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                                    Column(Modifier.padding(12.dp)) {
-                                        Row(
-                                            Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(label)
-                                            Switch(
-                                                checked = dayActive[iso] == true,
-                                                onCheckedChange = { on ->
-                                                    dayActive[iso] = on
-                                                    if (on) defaultCatsForDay(iso)
-                                                },
-                                            )
-                                        }
-                                        if (dayActive[iso] == true) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            ) {
-                                                CATEGORY_PRESETS.forEach { cat ->
-                                                    val set = dayCategories[iso] ?: setOf("GENERAL")
-                                                    val sel = cat in set
-                                                    FilterChip(
-                                                        selected = sel,
-                                                        onClick = {
-                                                            val next = set.toMutableSet()
-                                                            if (next.contains(cat)) {
-                                                                next.remove(cat)
-                                                                if (next.isEmpty()) next.add("GENERAL")
-                                                            } else {
-                                                                next.add(cat)
-                                                            }
-                                                            dayCategories[iso] = next
-                                                        },
-                                                        label = { Text(cat, maxLines = 1) },
-                                                    )
-                                                }
-                                            }
-                                            OutlinedTextField(
-                                                value = dayNotes[iso].orEmpty(),
-                                                onValueChange = { dayNotes[iso] = it },
-                                                label = { Text("Default notes") },
-                                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                                singleLine = true,
-                                            )
-                                        }
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        ) {
+                            Text("Select all days")
+                        }
+                        for (iso in 1..7) {
+                            val label = ISO_LABELS[iso - 1]
+                            Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(label)
+                                        Switch(
+                                            checked = dayActive[iso] == true,
+                                            onCheckedChange = { on -> dayActive[iso] = on },
+                                        )
                                     }
                                 }
                             }
                         }
-                        "UNSCHEDULED" -> {
-                            Text("Unit", style = MaterialTheme.typography.labelLarge)
-                            SectionDescription("Unscheduled habits are count-based. Use + and − on Today to log totals (pages, glasses of water, etc.).")
-                            OutlinedTextField(
-                                value = unit,
-                                onValueChange = { unit = it },
-                                label = { Text("Unit") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                        }
-                        else -> {}
+                    }
+                    valence == HabitValence.POSITIVE && positiveKind == KIND_UNSCHEDULED -> {
+                        SectionDescription(
+                            "Log anytime with + and − on Today (counts only). You will choose Mind or Body, then name the habit.",
+                        )
+                    }
+                    valence == HabitValence.NEGATIVE -> {
+                        SectionDescription(
+                            "Use + and − on Today to log how often this comes up. Next you will choose Mind or Body, then name the habit.",
+                        )
+                    }
+                    else -> {
+                        SectionDescription("Choose a kind above to continue.")
                     }
                 }
-                null -> {}
+            }
+            2 -> {
+                Text("Focus area", style = MaterialTheme.typography.labelLarge)
+                when {
+                    valence == HabitValence.POSITIVE && positiveKind == KIND_WORKOUT -> {
+                        SectionDescription(
+                            "Workouts always count toward physical health. This habit is fixed as Body.",
+                        )
+                        Text(
+                            "Body · physical health",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    valence == HabitValence.POSITIVE && positiveKind == KIND_WEIGH_IN -> {
+                        SectionDescription(
+                            "Weigh-ins are treated as a wellness check-in and always count toward Mind for trends.",
+                        )
+                        Text(
+                            "Mind · mental, emotional & social health",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+                    valence == HabitValence.POSITIVE && positiveKind == KIND_UNSCHEDULED -> {
+                        SectionDescription(
+                            "Choose whether this habit mainly supports how you feel and connect (Mind) or your physical health (Body).",
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = goalDomain == HabitGoalDomain.MIND,
+                                onClick = { goalDomain = HabitGoalDomain.MIND },
+                                label = { Text("Mind") },
+                            )
+                            FilterChip(
+                                selected = goalDomain == HabitGoalDomain.BODY,
+                                onClick = { goalDomain = HabitGoalDomain.BODY },
+                                label = { Text("Body") },
+                            )
+                        }
+                    }
+                    valence == HabitValence.NEGATIVE -> {
+                        SectionDescription(
+                            "Choose whether this habit mainly harms Mind (mental, emotional, social) or Body (physical) well-being in your tracking.",
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = goalDomain == HabitGoalDomain.MIND,
+                                onClick = { goalDomain = HabitGoalDomain.MIND },
+                                label = { Text("Mind") },
+                            )
+                            FilterChip(
+                                selected = goalDomain == HabitGoalDomain.BODY,
+                                onClick = { goalDomain = HabitGoalDomain.BODY },
+                                label = { Text("Body") },
+                            )
+                        }
+                    }
+                    else -> {
+                        Text("Go back and choose a habit kind.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
             3 -> {
+                when {
+                    valence == HabitValence.POSITIVE && (positiveKind == KIND_WORKOUT || positiveKind == KIND_WEIGH_IN) -> {
+                        Text("Name (optional)", style = MaterialTheme.typography.labelLarge)
+                        SectionDescription(
+                            "Defaults to «$DEFAULT_TITLE_WORKOUT» or «$DEFAULT_TITLE_WEIGH_IN». Change only if you want a different label in the app.",
+                        )
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Display name") },
+                            placeholder = {
+                                Text(
+                                    if (positiveKind == KIND_WEIGH_IN) DEFAULT_TITLE_WEIGH_IN else DEFAULT_TITLE_WORKOUT,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            label = { Text("Notes (optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                        )
+                    }
+                    valence == HabitValence.POSITIVE && positiveKind == KIND_UNSCHEDULED -> {
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Title") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        PositiveExampleChips { line -> title = line }
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            label = { Text("Notes (optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                        )
+                    }
+                    valence == HabitValence.NEGATIVE -> {
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { title = it },
+                            label = { Text("Title") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        NegativeExampleChips { line -> title = line }
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            label = { Text("Notes (optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                        )
+                    }
+                    else -> {
+                        Text("Go back and choose a habit kind.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+            4 -> {
                 Text("Review", style = MaterialTheme.typography.titleMedium)
                 saveError?.let { err ->
                     Spacer(Modifier.height(8.dp))
@@ -285,22 +452,26 @@ fun HabitWizardScreen(onDone: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Text(title.ifBlank { "—" }, style = MaterialTheme.typography.headlineSmall)
+                Text(resolvedTitle.ifBlank { "—" }, style = MaterialTheme.typography.headlineSmall)
                 Text(
                     buildString {
                         append(valence?.name ?: "")
-                        if (valence == HabitValence.NEGATIVE || scheduleKind == "UNSCHEDULED") {
-                            append(" · Incremental")
-                            if (unit.isNotBlank()) append(" ($unit)")
+                        when (valence) {
+                            HabitValence.NEGATIVE -> append(" · Unscheduled · Incremental")
+                            HabitValence.POSITIVE -> when (positiveKind) {
+                                KIND_WORKOUT -> append(" · Scheduled workout")
+                                KIND_WEIGH_IN -> append(" · Scheduled weigh-in (lbs)")
+                                KIND_UNSCHEDULED -> append(" · Other · Incremental")
+                                else -> {}
+                            }
+                            null -> {}
                         }
-                        if (valence == HabitValence.POSITIVE && scheduleKind == "SCHEDULED") {
-                            append(
-                                when (scheduledSessionKind) {
-                                    "WEIGHT" -> " · Scheduled weigh-in (lbs)"
-                                    else -> " · Scheduled"
-                                },
-                            )
+                        val gd = when {
+                            positiveKind == KIND_WORKOUT -> HabitGoalDomain.BODY
+                            positiveKind == KIND_WEIGH_IN -> HabitGoalDomain.MIND
+                            else -> goalDomain
                         }
+                        gd?.let { append(" · ${it.name}") }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -324,37 +495,26 @@ fun HabitWizardScreen(onDone: () -> Unit) {
                 onClick = {
                     when (step) {
                         1 -> {
-                            if (title.isBlank() || valence == null) return@Button
-                            if (valence == HabitValence.NEGATIVE) {
-                                trackingMode = TrackingMode.COUNT
-                            }
+                            if (!validateStep1(valence, positiveKind, dayActive)) return@Button
                             step = 2
                         }
                         2 -> {
-                            if (!validateStep2(
-                                    valence,
-                                    scheduleKind,
-                                    scheduledSessionKind,
-                                    unit,
-                                    dayActive,
-                                )
-                            ) {
-                                return@Button
-                            }
+                            if (!validateStepGoalDomain(valence, positiveKind, goalDomain)) return@Button
                             step = 3
                         }
                         3 -> {
+                            if (!validateStepName(valence, positiveKind, title)) return@Button
+                            step = 4
+                        }
+                        4 -> {
                             saveError = null
                             val input = buildInput(
-                                title,
+                                resolvedTitle,
                                 valence!!,
                                 notes,
-                                scheduleKind,
-                                scheduledSessionKind,
-                                unit,
+                                positiveKind,
+                                goalDomain,
                                 dayActive,
-                                dayNotes,
-                                dayCategories,
                             ) ?: return@Button
                             saving = true
                             scope.launch {
@@ -374,7 +534,7 @@ fun HabitWizardScreen(onDone: () -> Unit) {
             ) {
                 Text(
                     when (step) {
-                        3 -> "Save"
+                        4 -> "Save"
                         else -> "Next"
                     },
                 )
@@ -383,92 +543,63 @@ fun HabitWizardScreen(onDone: () -> Unit) {
     }
 }
 
-@Composable
-private fun RowScope.HabitTypeCard(
+private fun effectiveHabitTitle(
     title: String,
-    description: String,
-    selected: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-) {
-    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-    Card(
-        modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 104.dp)
-            .selectable(selected, onClick = onClick, role = Role.Button),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            },
-        ),
-        border = BorderStroke(if (selected) 2.dp else 1.dp, borderColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (selected) 3.dp else 0.dp),
-    ) {
-        Row(
-            Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .width(4.dp)
-                    .height(48.dp)
-                    .background(accent.copy(alpha = if (selected) 1f else 0.45f), RoundedCornerShape(3.dp)),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
+    valence: HabitValence?,
+    positiveKind: String?,
+): String {
+    val t = title.trim()
+    if (t.isNotEmpty()) return t
+    if (valence == HabitValence.POSITIVE && positiveKind == KIND_WORKOUT) return DEFAULT_TITLE_WORKOUT
+    if (valence == HabitValence.POSITIVE && positiveKind == KIND_WEIGH_IN) return DEFAULT_TITLE_WEIGH_IN
+    return ""
 }
 
-private fun validateStep2(
+private fun validateStep1(
     valence: HabitValence?,
-    scheduleKind: String?,
-    scheduledSessionKind: String?,
-    unit: String,
+    positiveKind: String?,
     dayActive: Map<Int, Boolean>,
 ): Boolean {
     if (valence == null) return false
-    if (valence == HabitValence.NEGATIVE) {
-        return unit.isNotBlank()
+    if (valence == HabitValence.NEGATIVE) return true
+    if (positiveKind == null) return false
+    if (positiveKind == KIND_WORKOUT || positiveKind == KIND_WEIGH_IN) {
+        return (1..7).any { dayActive[it] == true }
     }
-    if (scheduleKind == null) return false
-    if (scheduleKind == "SCHEDULED") {
-        val any = (1..7).any { dayActive[it] == true }
-        if (!any) return false
-        if (scheduledSessionKind == null) return false
+    return positiveKind == KIND_UNSCHEDULED
+}
+
+private fun validateStepGoalDomain(
+    valence: HabitValence?,
+    positiveKind: String?,
+    goalDomain: HabitGoalDomain?,
+): Boolean {
+    if (valence == null) return false
+    if (valence == HabitValence.POSITIVE && (positiveKind == KIND_WORKOUT || positiveKind == KIND_WEIGH_IN)) {
         return true
     }
-    if (scheduleKind == "UNSCHEDULED") {
-        return unit.isNotBlank()
+    return goalDomain != null
+}
+
+private fun validateStepName(
+    valence: HabitValence?,
+    positiveKind: String?,
+    title: String,
+): Boolean {
+    if (valence == null) return false
+    if (valence == HabitValence.POSITIVE && (positiveKind == KIND_WORKOUT || positiveKind == KIND_WEIGH_IN)) {
+        return true
     }
-    return false
+    return effectiveHabitTitle(title, valence, positiveKind).isNotEmpty()
 }
 
 private fun buildInput(
     title: String,
     valence: HabitValence,
     notes: String,
-    scheduleKind: String?,
-    scheduledSessionKind: String?,
-    unit: String,
+    positiveKind: String?,
+    goalDomain: HabitGoalDomain?,
     dayActive: Map<Int, Boolean>,
-    dayNotes: Map<Int, String>,
-    dayCategories: Map<Int, Set<String>>,
 ): NewHabitInput? {
     return when (valence) {
         HabitValence.NEGATIVE -> NewHabitInput(
@@ -477,47 +608,45 @@ private fun buildInput(
             notes = notes.takeIf { it.isNotBlank() },
             isScheduled = false,
             trackingMode = TrackingMode.COUNT,
-            unit = unit.trim().takeIf { it.isNotEmpty() } ?: return null,
+            unit = null,
             recurrence = null,
+            goalDomain = goalDomain ?: return null,
         )
-        HabitValence.POSITIVE -> when (scheduleKind) {
-            "SCHEDULED" -> {
+        HabitValence.POSITIVE -> when (positiveKind) {
+            KIND_WORKOUT, KIND_WEIGH_IN -> {
                 val rules = ArrayList<RecurrenceDayRule>()
                 for (iso in 1..7) {
                     if (dayActive[iso] != true) continue
-                    val cats = dayCategories[iso]?.toList() ?: listOf("GENERAL")
-                    val dn = dayNotes[iso]?.trim().orEmpty()
                     rules.add(
                         RecurrenceDayRule(
                             dayOfWeek = iso,
-                            categories = cats,
-                            defaultNotes = dn.ifEmpty { null },
+                            categories = listOf("GENERAL"),
+                            defaultNotes = null,
                         ),
                     )
                 }
                 if (rules.isEmpty()) return null
-                val tm = when (scheduledSessionKind) {
-                    "WEIGHT" -> TrackingMode.WEIGHT
-                    else -> null
-                }
+                val tm = if (positiveKind == KIND_WEIGH_IN) TrackingMode.WEIGHT else null
                 NewHabitInput(
                     title = title,
                     valence = valence,
                     notes = notes.takeIf { it.isNotBlank() },
                     isScheduled = true,
                     trackingMode = tm,
-                    unit = if (tm == TrackingMode.WEIGHT) "lbs" else null,
+                    unit = null,
                     recurrence = rules.sortedBy { it.dayOfWeek },
+                    goalDomain = if (positiveKind == KIND_WEIGH_IN) HabitGoalDomain.MIND else HabitGoalDomain.BODY,
                 )
             }
-            "UNSCHEDULED" -> NewHabitInput(
+            KIND_UNSCHEDULED -> NewHabitInput(
                 title = title,
                 valence = valence,
                 notes = notes.takeIf { it.isNotBlank() },
                 isScheduled = false,
                 trackingMode = TrackingMode.COUNT,
-                unit = unit.trim().takeIf { it.isNotEmpty() } ?: return null,
+                unit = null,
                 recurrence = null,
+                goalDomain = goalDomain ?: return null,
             )
             else -> null
         }

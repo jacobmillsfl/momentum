@@ -8,11 +8,17 @@ import com.momentum.app.data.backup.toEntity
 import com.momentum.app.data.local.MomentumDatabase
 import com.momentum.app.data.local.entity.HabitEntity
 import com.momentum.app.data.local.entity.KvEntity
+import com.momentum.app.data.local.entity.MigrationStateEntity
 import com.momentum.app.data.local.entity.LogEntity
+import com.momentum.app.data.local.entity.ProjectEntity
 import com.momentum.app.data.local.entity.SessionEntity
 import com.momentum.app.data.local.entity.TaskEntity
+import com.momentum.app.data.streak.ScheduledSessionScores
 import com.momentum.app.data.streak.StreakHelper
+import com.momentum.app.data.streak.accumulateScheduledSessionScores
 import com.momentum.app.data.streak.computeGoodBadForDay
+import com.momentum.app.data.streak.hasAnyHabitActivityForDay
+import com.momentum.app.domain.HabitGoalDomain
 import com.momentum.app.domain.HabitValence
 import com.momentum.app.domain.RecurrenceDayRule
 import com.momentum.app.domain.SESSION_GENERATION_WEEKS
@@ -25,6 +31,7 @@ import com.momentum.app.domain.millisToLocalDate
 import com.momentum.app.domain.startOfDayMillis
 import com.momentum.app.domain.startOfDayUtcMillis
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
@@ -43,6 +50,8 @@ data class NewHabitInput(
     val trackingMode: TrackingMode?,
     val unit: String?,
     val recurrence: List<RecurrenceDayRule>?,
+    /** Ignored for scheduled workouts (always [HabitGoalDomain.BODY]) and weigh-ins (always [HabitGoalDomain.MIND]). */
+    val goalDomain: HabitGoalDomain,
 )
 
 data class SessionWithHabit(
@@ -50,6 +59,10 @@ data class SessionWithHabit(
     val habitTitle: String,
     val habitTrackingMode: String?,
     val habitUnit: String?,
+    /** [com.momentum.app.domain.HabitValence.name] */
+    val habitValence: String,
+    /** [com.momentum.app.domain.HabitGoalDomain.name] or null */
+    val habitGoalDomain: String?,
 )
 
 data class UnscheduledRow(
@@ -57,40 +70,45 @@ data class UnscheduledRow(
     val todayDisplay: String,
 )
 
+/** Positive vs negative habit completion sums for one Mind/Body side (current calendar day). */
+data class DomainCompletionTotals(
+    val positive: Double,
+    val negative: Double,
+)
+
+data class TodayMindBodyCompletionTotals(
+    val mind: DomainCompletionTotals,
+    val body: DomainCompletionTotals,
+)
+
 class MomentumRepository(
     private val database: MomentumDatabase,
 ) {
     private val habitDao = database.habitDao()
+    private val migrationDao = database.migrationDao()
     private val sessionDao = database.sessionDao()
     private val logDao = database.logDao()
     private val kvDao = database.kvDao()
     private val taskDao = database.taskDao()
+    private val projectDao = database.projectDao()
     private val json = Json { ignoreUnknownKeys = true }
     private val backupJson = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
         encodeDefaults = true
     }
-    private val streakHelper = StreakHelper(sessionDao, habitDao, logDao, kvDao)
+    private val streakHelper = StreakHelper(sessionDao, logDao, kvDao)
     private val zone: TimeZone get() = TimeZone.getDefault()
 
     suspend fun seedKvDefaults() {
-        streakHelper.ensureFreezeMonthReset()
-        val monthKey = java.time.YearMonth.now().toString()
         val defaults = listOf(
             KvKeys.STREAK_CURRENT to "0",
             KvKeys.STREAK_LONGEST to "0",
             KvKeys.STREAK_LAST_ACTIVE to "",
-            KvKeys.FREEZES_ALLOWED to "3",
-            KvKeys.FREEZES_USED to "0",
-            KvKeys.FREEZES_MONTH to monthKey,
-            KvKeys.FREEZE_LAST_APPLIED_DAY to "",
             KvKeys.THEME_MODE to "system",
             KvKeys.NOTIFICATIONS_ENABLED to "false",
             KvKeys.NOTIFICATION_TIME to "09:00",
-            KvKeys.STREAK_PERFECT_CURRENT to "0",
-            KvKeys.STREAK_PERFECT_LONGEST to "0",
-            KvKeys.STREAK_PERFECT_LAST_ACTIVE to "",
+            KvKeys.NOTIFICATION_EVENING_TIME to "20:00",
             KvKeys.TARGET_WEIGHT_LBS to "",
             KvKeys.STARTING_WEIGHT_LBS to "",
         )
@@ -99,7 +117,23 @@ class MomentumRepository(
                 kvDao.upsert(KvEntity(k, v))
             }
         }
+        runStreakActivityMigrationIfNeeded()
     }
+
+    private suspend fun runStreakActivityMigrationIfNeeded() {
+        if (migrationDao.getById(MigrationIds.STREAK_ACTIVITY_V2)?.completed == true) return
+        streakHelper.recomputeStreakMetrics()
+        migrationDao.upsert(
+            MigrationStateEntity(
+                MigrationIds.STREAK_ACTIVITY_V2,
+                completed = true,
+                completedAtEpochMs = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    suspend fun hasAnyHabitActivityToday(): Boolean =
+        hasAnyHabitActivityForDay(LocalDate.now(), sessionDao, logDao, zone)
 
     suspend fun getKv(key: String): String? = kvDao.get(key)
 
@@ -160,20 +194,19 @@ class MomentumRepository(
         } else {
             null
         }
+        val resolvedGoalDomain = resolveGoalDomainForNewHabit(input)
         val habit = HabitEntity(
             id = id,
             title = input.title.trim(),
             valence = input.valence.name,
             isScheduled = input.isScheduled,
             trackingMode = input.trackingMode?.name,
-            unit = when (input.trackingMode) {
-                TrackingMode.WEIGHT -> "lbs"
-                else -> input.unit?.trim()?.takeIf { it.isNotEmpty() }
-            },
+            unit = if (input.trackingMode == TrackingMode.WEIGHT) "lbs" else null,
             recurrenceJson = recurrenceJson,
             notes = input.notes?.trim()?.takeIf { it.isNotEmpty() },
             archivedAt = null,
             createdAt = now,
+            goalDomain = resolvedGoalDomain.name,
         )
         database.withTransaction {
             habitDao.insert(habit)
@@ -204,6 +237,13 @@ class MomentumRepository(
         return id
     }
 
+    private fun resolveGoalDomainForNewHabit(input: NewHabitInput): HabitGoalDomain =
+        if (input.isScheduled) {
+            if (input.trackingMode == TrackingMode.WEIGHT) HabitGoalDomain.MIND else HabitGoalDomain.BODY
+        } else {
+            input.goalDomain
+        }
+
     private suspend fun dayRange(): Pair<Long, Long> {
         val start = startOfDayUtcMillis(zone)
         val cal = Calendar.getInstance(zone)
@@ -227,7 +267,7 @@ class MomentumRepository(
         val sessions = sessionDao.sessionsBetween(start, end)
         return sessions.mapNotNull { s ->
             val h = habitDao.getById(s.habitId) ?: return@mapNotNull null
-            SessionWithHabit(s, h.title, h.trackingMode, h.unit)
+            SessionWithHabit(s, h.title, h.trackingMode, h.unit, h.valence, h.goalDomain)
         }
     }
 
@@ -296,7 +336,7 @@ class MomentumRepository(
         val sessions = sessionDao.sessionsBetween(start, end)
         return sessions.mapNotNull { s ->
             val h = habitDao.getById(s.habitId) ?: return@mapNotNull null
-            SessionWithHabit(s, h.title, h.trackingMode, h.unit)
+            SessionWithHabit(s, h.title, h.trackingMode, h.unit, h.valence, h.goalDomain)
         }
     }
 
@@ -307,6 +347,48 @@ class MomentumRepository(
             val sum = unscheduledDayTotal(h.id, start, end)
             UnscheduledRow(h, sum.toInt().toString())
         }
+    }
+
+    /**
+     * Today's completions split by Mind vs Body for the Today gauge: unscheduled log totals plus
+     * one unit per completed scheduled session (weigh-in or workout) per habit.
+     */
+    suspend fun todayMindBodyCompletionTotals(): TodayMindBodyCompletionTotals {
+        val date = LocalDate.now()
+        val (start, end) = dayRange()
+        val dayStart = localDateToStartMillis(date, zone)
+        var mindPos = 0.0
+        var mindNeg = 0.0
+        var bodyPos = 0.0
+        var bodyNeg = 0.0
+        val habits = habitDao.listActive()
+        for (h in habits) {
+            val domain = h.goalDomain?.let { runCatching { HabitGoalDomain.valueOf(it) }.getOrNull() }
+                ?: continue
+            val isPositive = h.valence == HabitValence.POSITIVE.name
+            if (!h.isScheduled) {
+                val sum = unscheduledDayTotal(h.id, start, end)
+                if (sum <= 0.0) continue
+                when (domain) {
+                    HabitGoalDomain.MIND -> if (isPositive) mindPos += sum else mindNeg += sum
+                    HabitGoalDomain.BODY -> if (isPositive) bodyPos += sum else bodyNeg += sum
+                }
+            } else {
+                val s = sessionDao.findByHabitAndDay(h.id, dayStart) ?: continue
+                if (s.status != SessionStatus.COMPLETED.name) continue
+                val contribution = 1.0
+                when (domain) {
+                    HabitGoalDomain.MIND ->
+                        if (isPositive) mindPos += contribution else mindNeg += contribution
+                    HabitGoalDomain.BODY ->
+                        if (isPositive) bodyPos += contribution else bodyNeg += contribution
+                }
+            }
+        }
+        return TodayMindBodyCompletionTotals(
+            mind = DomainCompletionTotals(mindPos, mindNeg),
+            body = DomainCompletionTotals(bodyPos, bodyNeg),
+        )
     }
 
     suspend fun markSession(sessionId: String, status: SessionStatus, completionValue: Double? = null) {
@@ -403,21 +485,165 @@ class MomentumRepository(
         habitDao.update(h.copy(archivedAt = System.currentTimeMillis()))
     }
 
+    /** Permanently removes the habit and all logs/sessions (cascade). */
+    suspend fun deleteHabitPermanently(habitId: String) {
+        habitDao.deleteById(habitId)
+    }
+
+    suspend fun updateHabitMetadata(
+        habitId: String,
+        title: String,
+        notes: String?,
+        goalDomain: HabitGoalDomain?,
+    ) {
+        val h = habitDao.getById(habitId) ?: throw IllegalArgumentException("Habit not found")
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) throw IllegalStateException("Name is required")
+        val resolvedGoal = when {
+            h.isScheduled && h.trackingMode == TrackingMode.WEIGHT.name -> HabitGoalDomain.MIND
+            h.isScheduled -> HabitGoalDomain.BODY
+            else -> goalDomain ?: throw IllegalStateException("Choose Mind or Body")
+        }
+        habitDao.update(
+            h.copy(
+                title = trimmed,
+                notes = notes?.trim()?.takeIf { it.isNotEmpty() },
+                goalDomain = resolvedGoal.name,
+            ),
+        )
+    }
+
+    suspend fun updateScheduledHabitWeeklyPlan(habitId: String, rules: List<RecurrenceDayRule>) {
+        val h = habitDao.getById(habitId) ?: return
+        if (!h.isScheduled || rules.isEmpty()) return
+        val sorted = rules.sortedBy { it.dayOfWeek }
+        val recurrenceJson = json.encodeToString(ListSerializer(RecurrenceDayRule.serializer()), sorted)
+        val todayStart = startOfDayUtcMillis(zone)
+        database.withTransaction {
+            habitDao.update(h.copy(recurrenceJson = recurrenceJson))
+            sessionDao.deleteFuturePlannedSessions(habitId, todayStart, SessionStatus.PLANNED.name)
+            val occ = buildOccurrencesFromToday(sorted, SESSION_GENERATION_WEEKS, zone)
+            for (o in occ) {
+                if (sessionDao.findByHabitAndDay(habitId, o.dayStartMs) != null) continue
+                val categoriesJson = json.encodeToString(
+                    ListSerializer(serializer<String>()),
+                    o.rule.categories,
+                )
+                sessionDao.insert(
+                    SessionEntity(
+                        id = UUID.randomUUID().toString(),
+                        habitId = habitId,
+                        scheduledAt = o.dayStartMs,
+                        completedAt = null,
+                        status = SessionStatus.PLANNED.name,
+                        categoriesJson = categoriesJson,
+                        notes = o.rule.defaultNotes?.trim()?.takeIf { it.isNotEmpty() },
+                        completionValue = null,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * Merges two habits into a new one with [newTitle]; reassigns all logs/sessions.
+     * Habits must match valence, scheduled mode, tracking mode, and Mind/Body focus.
+     */
+    suspend fun mergeHabitsIntoNew(habitIdA: String, habitIdB: String, newTitle: String): String {
+        val a = habitDao.getById(habitIdA) ?: throw IllegalArgumentException("Habit not found")
+        val b = habitDao.getById(habitIdB) ?: throw IllegalArgumentException("Other habit not found")
+        if (a.id == b.id) throw IllegalStateException("Pick two different habits")
+        if (a.valence != b.valence) throw IllegalStateException("Both habits must be the same type (positive or negative)")
+        if (a.isScheduled != b.isScheduled) throw IllegalStateException("Cannot merge scheduled with unscheduled")
+        if (a.trackingMode != b.trackingMode) throw IllegalStateException("Habit kinds must match (e.g. both count-based)")
+        if (a.goalDomain == null || b.goalDomain == null || a.goalDomain != b.goalDomain) {
+            throw IllegalStateException("Both habits must have the same Mind/Body focus")
+        }
+        val t = newTitle.trim()
+        if (t.isEmpty()) throw IllegalStateException("New name is required")
+
+        val newId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val mergedNotes = listOfNotNull(a.notes, b.notes)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n---\n")
+            .takeIf { it.isNotEmpty() }
+        val mergedRecurrenceJson = if (a.isScheduled) {
+            val ra = parseRecurrenceRules(a.recurrenceJson)
+            val rb = parseRecurrenceRules(b.recurrenceJson)
+            val byDay = LinkedHashMap<Int, RecurrenceDayRule>()
+            for (r in ra + rb) {
+                byDay[r.dayOfWeek] = r
+            }
+            json.encodeToString(
+                ListSerializer(RecurrenceDayRule.serializer()),
+                byDay.values.sortedBy { it.dayOfWeek },
+            )
+        } else {
+            null
+        }
+        database.withTransaction {
+            val newHabit = HabitEntity(
+                id = newId,
+                title = t,
+                valence = a.valence,
+                isScheduled = a.isScheduled,
+                trackingMode = a.trackingMode,
+                unit = a.unit,
+                recurrenceJson = mergedRecurrenceJson,
+                notes = mergedNotes,
+                archivedAt = null,
+                createdAt = now,
+                goalDomain = a.goalDomain,
+            )
+            habitDao.insert(newHabit)
+            logDao.reassignHabitId(a.id, newId)
+            logDao.reassignHabitId(b.id, newId)
+            if (a.isScheduled) {
+                // Move every session to the new habit first so nothing still references the old rows;
+                // then collapse duplicate times (same calendar instant) into one session.
+                sessionDao.reassignHabitId(a.id, newId)
+                sessionDao.reassignHabitId(b.id, newId)
+                dedupeSessionsSharingScheduledInstant(sessionDao.sessionsForHabitOrdered(newId))
+            }
+            habitDao.deleteById(a.id)
+            habitDao.deleteById(b.id)
+        }
+        return newId
+    }
+
+    /**
+     * Sessions already share one [SessionEntity.habitId]. Merge rows that share the same [SessionEntity.scheduledAt]
+     * by keeping one session and moving tasks off the others before deleting duplicates.
+     */
+    private suspend fun dedupeSessionsSharingScheduledInstant(sessions: List<SessionEntity>) {
+        if (sessions.isEmpty()) return
+        val groups = sessions.groupBy { it.scheduledAt }
+        for (group in groups.values) {
+            val keeper = group.first()
+            for (extra in group.drop(1)) {
+                taskDao.reassignSessionId(extra.id, keeper.id)
+                sessionDao.deleteById(extra.id)
+            }
+        }
+    }
+
+    private fun parseRecurrenceRules(recurrenceJson: String?): List<RecurrenceDayRule> {
+        if (recurrenceJson.isNullOrBlank()) return emptyList()
+        return try {
+            json.decodeFromString(ListSerializer(RecurrenceDayRule.serializer()), recurrenceJson)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun streakSnapshot(): StreakSnapshot {
-        streakHelper.ensureFreezeMonthReset()
         val current = kvDao.get(KvKeys.STREAK_CURRENT)?.toIntOrNull() ?: 0
         val longest = kvDao.get(KvKeys.STREAK_LONGEST)?.toIntOrNull() ?: 0
-        val perfectCurrent = kvDao.get(KvKeys.STREAK_PERFECT_CURRENT)?.toIntOrNull() ?: 0
-        val perfectLongest = kvDao.get(KvKeys.STREAK_PERFECT_LONGEST)?.toIntOrNull() ?: 0
-        val allowed = (kvDao.get(KvKeys.FREEZES_ALLOWED)?.toIntOrNull() ?: 3)
-            .coerceIn(0, KvKeys.MAX_STREAK_FREEZES_PER_MONTH)
-        val used = kvDao.get(KvKeys.FREEZES_USED)?.toIntOrNull() ?: 0
         return StreakSnapshot(
             current = current,
             longest = longest,
-            perfectCurrent = perfectCurrent,
-            perfectLongest = perfectLongest,
-            freezesRemaining = (allowed - used).coerceAtLeast(0),
         )
     }
 
@@ -508,12 +734,32 @@ class MomentumRepository(
     suspend fun listScheduledExerciseHabits(): List<HabitEntity> =
         habitDao.listScheduledActive().filter { it.trackingMode != TrackingMode.WEIGHT.name }
 
+    /** Scheduled weigh-in habits (WEIGHT tracking), active. */
+    suspend fun listScheduledWeighInHabits(): List<HabitEntity> =
+        habitDao.listScheduledActive().filter { it.trackingMode == TrackingMode.WEIGHT.name }
+
+    /** True if the user already has a scheduled workout-style habit (at most one is allowed). */
+    suspend fun hasScheduledWorkoutHabit(): Boolean = listScheduledExerciseHabits().isNotEmpty()
+
+    /** True if the user already has a scheduled weigh-in habit (at most one is allowed). */
+    suspend fun hasScheduledWeighInHabit(): Boolean = listScheduledWeighInHabits().isNotEmpty()
+
     /**
      * Exercise habits that have no session row on [date] yet (ie: off-day or not generated).
      * Use [ensureSessionForHabitOnDate] to add a session so it appears on Today / Progress.
+     * Empty if the user has no scheduled workout habit.
      */
     suspend fun scheduledExerciseHabitsMissingSessionOnDate(date: LocalDate): List<HabitEntity> {
         val habits = listScheduledExerciseHabits()
+        return habits.filter { findSessionForHabitOnDate(it.id, date) == null }
+    }
+
+    /**
+     * Weigh-in habits that have no session row on [date] yet.
+     * Empty if the user has no scheduled weigh-in habit.
+     */
+    suspend fun scheduledWeighInHabitsMissingSessionOnDate(date: LocalDate): List<HabitEntity> {
+        val habits = listScheduledWeighInHabits()
         return habits.filter { findSessionForHabitOnDate(it.id, date) == null }
     }
 
@@ -543,6 +789,8 @@ class MomentumRepository(
         val end = start.plusDays(34)
         val out = ArrayList<CalendarDayState>()
         var d = start
+        val dueProjects = projectDao.listIncompleteDueInEpochDayRange(start.toEpochDay(), end.toEpochDay())
+        val dueByEpochDay = dueProjects.groupBy { it.dueEpochDay!! }
         while (!d.isAfter(end)) {
             val snap = computeGoodBadForDay(
                 date = d,
@@ -553,7 +801,7 @@ class MomentumRepository(
                 logDao = logDao,
                 zone = zone,
             )
-            val emoji = when {
+            val habitEmoji = when {
                 snap.good == 0.0 && snap.bad == 0.0 -> CalendarDayEmoji.REST
                 snap.good > 0.0 && snap.bad == 0.0 -> CalendarDayEmoji.FIRE
                 snap.bad > 0.0 && snap.good == 0.0 -> CalendarDayEmoji.X_MARK
@@ -561,12 +809,71 @@ class MomentumRepository(
                 snap.bad > snap.good -> CalendarDayEmoji.TREND_DOWN
                 else -> CalendarDayEmoji.TIE
             }
+            val projectDue = !d.isBefore(today) && dueByEpochDay[d.toEpochDay()]?.isNotEmpty() == true
+            val emoji = if (projectDue) CalendarDayEmoji.PROJECT_DUE else habitEmoji
             val futureExercise =
                 d.isAfter(today) && recurrenceHasExerciseOnWeekday(d)
             out.add(CalendarDayState(d, emoji, futureExerciseScheduled = futureExercise))
             d = d.plusDays(1)
         }
         return out
+    }
+
+    suspend fun projectsIncompleteDueOn(date: LocalDate): List<ProjectEntity> =
+        projectDao.listIncompleteDueOnEpochDay(date.toEpochDay())
+
+    suspend fun listProjectsActive(): List<ProjectEntity> = projectDao.listActiveOrdered()
+
+    suspend fun listProjectsCompleted(): List<ProjectEntity> = projectDao.listCompletedOrdered()
+
+    suspend fun projectById(id: String): ProjectEntity? = projectDao.getById(id)
+
+    suspend fun createProject(title: String, description: String?, dueDate: LocalDate?): String {
+        val t = title.trim()
+        if (t.isEmpty()) throw IllegalStateException("Title is required")
+        val id = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val dueEpoch = dueDate?.toEpochDay()
+        projectDao.insert(
+            ProjectEntity(
+                id = id,
+                title = t,
+                description = description?.trim()?.takeIf { it.isNotEmpty() },
+                createdAtMs = now,
+                dueEpochDay = dueEpoch,
+                completedAtMs = null,
+            ),
+        )
+        return id
+    }
+
+    suspend fun updateProject(
+        id: String,
+        title: String,
+        description: String?,
+        dueDate: LocalDate?,
+        completed: Boolean,
+    ) {
+        val p = projectDao.getById(id) ?: throw IllegalArgumentException("Project not found")
+        val t = title.trim()
+        if (t.isEmpty()) throw IllegalStateException("Title is required")
+        val dueEpoch = dueDate?.toEpochDay()
+        val completedAt = when {
+            completed -> p.completedAtMs ?: System.currentTimeMillis()
+            else -> null
+        }
+        projectDao.update(
+            p.copy(
+                title = t,
+                description = description?.trim()?.takeIf { it.isNotEmpty() },
+                dueEpochDay = dueEpoch,
+                completedAtMs = completedAt,
+            ),
+        )
+    }
+
+    suspend fun deleteProject(id: String) {
+        projectDao.deleteById(id)
     }
 
     /** Completed weigh-in sessions (scheduled WEIGHT habits), oldest first. */
@@ -591,14 +898,24 @@ class MomentumRepository(
     }
 
     /**
-     * Per-day good vs bad for Habit Trends: unscheduled log totals plus one point per completed
-     * scheduled session (positive valence → good, negative → bad). Weigh-in complete counts as 1 good.
+     * Per-day good vs bad for Habit Trends: unscheduled log totals plus scheduled sessions scored
+     * like the Progress calendar (complete / miss / past planned), so momentum matches streak logic.
+     *
+     * @param goalDomain `null` = combined trend using every active habit that has a goal domain set.
+     *  Otherwise only habits in that domain contribute.
      */
-    suspend fun habitTrendDaily(windowDays: Int): List<HabitTrendDay> {
+    suspend fun habitTrendDaily(windowDays: Int, goalDomain: HabitGoalDomain? = null): List<HabitTrendDay> {
+        val window = windowDays.coerceAtLeast(1)
         val end = LocalDate.now()
-        val start = end.minusDays(windowDays.toLong() - 1)
-        val unscheduledHabits = habitDao.listActive().filter { !it.isScheduled }
-        val activeHabitIds = habitDao.listActive().map { it.id }.toSet()
+        val start = end.minusDays(window.toLong() - 1)
+        val activeHabits = habitDao.listActive()
+        fun habitInTrendFilter(h: HabitEntity): Boolean {
+            val gd = h.goalDomain ?: return false
+            return goalDomain == null || gd == goalDomain.name
+        }
+        val unscheduledHabits = activeHabits.filter { !it.isScheduled && habitInTrendFilter(it) }
+        val scheduledHabitIdsInFilter =
+            activeHabits.filter { it.isScheduled && habitInTrendFilter(it) }.map { it.id }.toSet()
         val out = ArrayList<HabitTrendDay>()
         var day = start
         while (!day.isAfter(end)) {
@@ -613,14 +930,18 @@ class MomentumRepository(
                 }
                 if (h.valence == HabitValence.POSITIVE.name) goodU += sum else badU += sum
             }
-            var goodS = 0.0
-            var badS = 0.0
-            for (s in sessionDao.sessionsBetween(ds, de)) {
-                if (s.status != SessionStatus.COMPLETED.name) continue
-                val h = habitDao.getById(s.habitId) ?: continue
-                if (h.id !in activeHabitIds) continue
-                if (h.valence == HabitValence.POSITIVE.name) goodS += 1.0 else badS += 1.0
-            }
+            val sessions = sessionDao.sessionsBetween(ds, de).filter { it.habitId in scheduledHabitIdsInFilter }
+            val schedAcc = ScheduledSessionScores()
+            accumulateScheduledSessionScores(
+                sessions,
+                habitDao,
+                day,
+                end,
+                calendarMode = true,
+                schedAcc,
+            )
+            val goodS = schedAcc.good
+            val badS = schedAcc.bad
             val good = goodU + goodS
             val bad = badU + badS
             out.add(
@@ -638,6 +959,54 @@ class MomentumRepository(
             day = day.plusDays(1)
         }
         return out
+    }
+
+    private suspend fun autoAssignInferrableGoalDomains() {
+        for (h in habitDao.listActive()) {
+            if (h.goalDomain != null) continue
+            val inferred: HabitGoalDomain? = when {
+                h.isScheduled && h.trackingMode == TrackingMode.WEIGHT.name -> HabitGoalDomain.MIND
+                h.isScheduled -> HabitGoalDomain.BODY
+                else -> null
+            }
+            if (inferred != null) {
+                habitDao.update(h.copy(goalDomain = inferred.name))
+            }
+        }
+    }
+
+    /**
+     * When true, the app should block normal navigation until [completeGoalDomainMigration] runs.
+     * Infers Body/Mind for scheduled exercise vs weigh-in habits automatically.
+     */
+    suspend fun shouldBlockForGoalDomainMigration(): Boolean {
+        if (migrationDao.getById(MigrationIds.HABIT_GOAL_DOMAIN_V1)?.completed == true) return false
+        autoAssignInferrableGoalDomains()
+        val pending = habitDao.listActive().filter { it.goalDomain == null }
+        if (pending.isEmpty()) {
+            migrationDao.upsert(
+                MigrationStateEntity(MigrationIds.HABIT_GOAL_DOMAIN_V1, true, System.currentTimeMillis()),
+            )
+            return false
+        }
+        return true
+    }
+
+    suspend fun listHabitsNeedingGoalDomainClassification(): List<HabitEntity> {
+        autoAssignInferrableGoalDomains()
+        return habitDao.listActive().filter { it.goalDomain == null }
+    }
+
+    suspend fun completeGoalDomainMigration(assignments: Map<String, HabitGoalDomain>) {
+        database.withTransaction {
+            for ((id, domain) in assignments) {
+                val h = habitDao.getById(id) ?: continue
+                habitDao.update(h.copy(goalDomain = domain.name))
+            }
+            migrationDao.upsert(
+                MigrationStateEntity(MigrationIds.HABIT_GOAL_DOMAIN_V1, true, System.currentTimeMillis()),
+            )
+        }
     }
 
     suspend fun logsForHabitDay(habitId: String): List<LogEntity> =
@@ -778,6 +1147,7 @@ class MomentumRepository(
         val tasks = taskDao.listAllForBackup().map { it.toBackupRow() }
         val logs = logDao.listAllForBackup().map { it.toBackupRow() }
         val kv = kvDao.listAllForBackup().map { it.toBackupRow() }
+        val projects = projectDao.listAllForBackup().map { it.toBackupRow() }
         val payload = MomentumBackupV1(
             schemaVersion = MOMENTUM_BACKUP_SCHEMA_VERSION,
             exportedAtEpochMs = System.currentTimeMillis(),
@@ -786,6 +1156,7 @@ class MomentumRepository(
             tasks = tasks,
             logs = logs,
             kv = kv,
+            projects = projects,
         )
         return backupJson.encodeToString(MomentumBackupV1.serializer(), payload)
     }
@@ -796,9 +1167,9 @@ class MomentumRepository(
         } catch (e: Exception) {
             throw IllegalArgumentException("Could not read backup file.", e)
         }
-        if (data.schemaVersion != MOMENTUM_BACKUP_SCHEMA_VERSION) {
+        if (data.schemaVersion !in 1..MOMENTUM_BACKUP_SCHEMA_VERSION) {
             throw IllegalArgumentException(
-                "This backup (version ${data.schemaVersion}) cannot be loaded. App supports version $MOMENTUM_BACKUP_SCHEMA_VERSION.",
+                "This backup (version ${data.schemaVersion}) cannot be loaded. App supports versions 1–$MOMENTUM_BACKUP_SCHEMA_VERSION.",
             )
         }
         return data
@@ -818,12 +1189,33 @@ class MomentumRepository(
             logDao.deleteAll()
             sessionDao.deleteAll()
             kvDao.deleteAll()
+            migrationDao.deleteAll()
             habitDao.deleteAll()
+            projectDao.deleteAll()
             data.habits.forEach { habitDao.insert(it.toEntity()) }
             data.sessions.forEach { sessionDao.insert(it.toEntity()) }
             data.tasks.forEach { taskDao.insert(it.toEntity()) }
             data.logs.forEach { logDao.insert(it.toEntity()) }
             data.kv.forEach { kvDao.upsert(it.toEntity()) }
+            data.projects.forEach { projectDao.insert(it.toEntity()) }
         }
+    }
+
+    /**
+     * Removes all habits, sessions, tasks, logs, and settings, then restores the same default
+     * key/value rows as a fresh install ([seedKvDefaults]). Caller should refresh UI and
+     * reschedule notifications.
+     */
+    suspend fun resetAllLocalData() {
+        database.withTransaction {
+            taskDao.deleteAll()
+            logDao.deleteAll()
+            sessionDao.deleteAll()
+            kvDao.deleteAll()
+            migrationDao.deleteAll()
+            habitDao.deleteAll()
+            projectDao.deleteAll()
+        }
+        seedKvDefaults()
     }
 }
